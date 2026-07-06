@@ -1,0 +1,27 @@
+[project]
+name = "experiment-v2"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "cantera>=3.2.0",
+    "deepxde>=1.15.0",
+    "h5py>=3.16.0",
+    "ipykernel>=7.3.0",
+    "matplotlib>=3.11.0",
+    "numpy>=2.5.0",
+    "pandas>=3.0.3",
+    "torch>=2.12.1",
+    "tqdm>=4.68.3",
+]
+
+[build-system]
+requires = ["setuptools>=81.0.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+"chem_operator.example_data" = ["*.yaml", "README.md"]
