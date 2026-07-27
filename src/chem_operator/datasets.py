@@ -1,11 +1,11 @@
 from __future__ import annotations
-import os
 from pathlib import Path
-from collections.abc import Iterable, Sequence, Callable
-from typing import Any, Callable, Literal, Mapping, Protocol, Sequence
+from collections.abc import Iterable, Sequence, Callable, Mapping
+from typing import Any, Literal, Protocol
 from itertools import product
 from dataclasses import dataclass
 import json
+from copy import deepcopy
 
 from tqdm import tqdm, trange
 
@@ -17,10 +17,7 @@ import numpy as np
 # import pandas as pd
 
 import torch
-from torch.utils.data import DataLoader, Dataset
-
-os.environ["DDE_BACKEND"] = "pytorch"
-import deepxde as dde
+from torch.utils.data import Dataset
 
 from chem_operator.utils import get_mechanism_file
 from chem_operator.sampling import ParameterSpec
@@ -83,27 +80,12 @@ class SimulationRecord:
 
         return states
 
-# class CaseSimulator(Protocol):
-#     name: str
-
-#     def sample_case(
-#         self,
-#         rng: np.random.Generator,
-#     ) -> CaseParameters:
-#         pass
-
-#     def run_case(
-#         self,
-#         case: CaseParameters,
-#     ) -> SimulationRecord:
-#         pass
-
-#     # def schema(self) -> DataSchema:
-#     #     pass
-
 class CaseSimulator(Protocol):
     name: str
-    parameter_space: Mapping[str, ParameterSpec]
+
+    @property
+    def parameter_space(self) -> Mapping[str, ParameterSpec] | None:
+        ...
 
     def make_case(
         self,
@@ -118,7 +100,10 @@ class CaseSimulator(Protocol):
         ...
 
 class SimulationDatasetGenerator:
-    """may need to be refactored to save simulation trajecories one at a time to reduce RAM consumption"""
+    """
+    may need to be refactored to save simulation trajecories one at a time to reduce RAM consumption
+    currently all generated then all saved
+    """
     def __init__(
         self,
         simulator: CaseSimulator,
@@ -138,9 +123,35 @@ class SimulationDatasetGenerator:
 
         # if self.output_path.exists() and not self.overwrite:
         #     raise FileExistsError(f"{self.output_path} already exists.")
-        
-    def split_path(self, split: str) -> Path:
-        return self.output_path / f"{self.simulator.name}_{split}.h5"
+
+    @staticmethod
+    def split_parameter_space(
+        parameter_space: Mapping[str, ParameterSpec],
+    ):
+        grid_specs = {}
+        sampled_specs = {}
+
+        for name, spec in parameter_space.items():
+            if spec.is_grid:
+                grid_specs[name] = spec
+            else:
+                sampled_specs[name] = spec
+
+        return sampled_specs, grid_specs
+
+    @staticmethod
+    def iter_grid_combinations(
+        grid_specs: Mapping[str, ParameterSpec],
+    ):
+        if not grid_specs:
+            yield 0, {}
+            return
+
+        names = list(grid_specs)
+        value_lists = [grid_specs[name].grid_values() for name in names]
+
+        for grid_idx, values in enumerate(product(*value_lists)):
+            yield grid_idx, dict(zip(names, values))
 
     def generate_split(
         self,
@@ -151,21 +162,45 @@ class SimulationDatasetGenerator:
         rng = np.random.default_rng(seed)
         records = []
 
+        sampled_specs, grid_specs = SimulationDatasetGenerator.split_parameter_space(
+            self.simulator.parameter_space
+        )
+
+        record_idx = 0
+
         print(f"{split = }")
-        for case_idx in trange(n_cases):
-            case = self.simulator.sample_case(rng)
-            record = self.simulator.run_case(case)
 
-            record.metadata.update(
-                {
-                    "case_idx": case_idx,
-                    "split": split,
-                    "simulator": self.simulator.name,
-                    "seed": seed,
-                }
-            )
+        for base_case_idx in trange(n_cases):
+            sampled_params = {
+                name: spec.sample(rng)
+                for name, spec in sampled_specs.items()
+            }
 
-            records.append(record)
+            for grid_idx, grid_params in SimulationDatasetGenerator.iter_grid_combinations(grid_specs):
+                params = sampled_params | grid_params
+
+                case = self.simulator.make_case(params)
+                try:
+                    record = self.simulator.run_case(case)
+                except Exception as e:
+                    print(f"Simulation case [{base_case_idx = },{record_idx = }] failed")
+                    print(e)
+                    continue
+
+                record.metadata.update(
+                    {
+                        "record_idx": record_idx,
+                        "base_case_idx": base_case_idx,
+                        "grid_idx": grid_idx,
+                        "split": split,
+                        "simulator": self.simulator.name,
+                        "seed": seed,
+                        "params": deepcopy(params),
+                    }
+                )
+
+                records.append(record)
+                record_idx += 1
 
         return records
 
@@ -196,7 +231,7 @@ class SimulationDatasetGenerator:
         overwrite: bool = False,
     ) -> None:
         self.output_path.mkdir(parents=True, exist_ok=True)
-        path = self.split_path(split)
+        path = self.output_path / f"{self.simulator.name}_{split}.h5"
 
         if path.exists() and not overwrite:
             raise FileExistsError(f"{path} already exists. Use overwrite = True.")
@@ -732,7 +767,7 @@ class CanteraDataset(Dataset):
                 if name == source_coordinate_name
                 else name
             )
-            if self._field_shape_matches_steps(dataset, n_steps):
+            if name == source_coordinate_name:
                 coordinates[output_name] = self._to_tensor(
                     np.asarray(dataset[indices]),
                     name=f"coordinates/{name}",
@@ -838,3 +873,25 @@ class CanteraDataset(Dataset):
 
     def __del__(self):
         self.close()
+
+
+# Public preprocessing API. These imports intentionally live at the end of the
+# module so the HDF5 reader above is defined before the processing layer loads.
+from chem_operator.normalization import (  # noqa: E402
+    IdentityNormalizer,
+    MinMaxNormalization,
+    MinMaxNormalizer,
+    Normalizer,
+    RMSNormalization,
+    RMSNormalizer,
+    ZScoreNormalization,
+    ZScoreNormalizer,
+)
+from chem_operator.dataset_processing import (  # noqa: E402
+    DataProcessor,
+    FieldPacker,
+    NormalizationConfig,
+    PackedFieldLayout,
+    ProcessedDataset,
+    TargetTransformConfig,
+)

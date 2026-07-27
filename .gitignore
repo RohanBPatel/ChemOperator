@@ -8,6 +8,10 @@ wheels/
 
 # Virtual environments
 .venv
+.ray/
 
 # datasets
 *.h5
+
+core
+core.*

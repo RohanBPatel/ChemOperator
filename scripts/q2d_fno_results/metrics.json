@@ -1,0 +1,21 @@
+{
+  "normalized_relative_l2": 0.00677269883453846,
+  "normalized_relative_l2_velocity_axial": 0.006627482827752829,
+  "normalized_relative_l2_X_CH4": 0.0062631722539663315,
+  "normalized_relative_l2_X_H2": 0.007222437299787998,
+  "parameters": 87075,
+  "final_training_seconds": 20.697654176998185,
+  "ray_tuning_seconds": 284.604438993003,
+  "best_epoch": 43,
+  "best_validation_loss": 0.0075567375868558885,
+  "mesh_benchmark_rows": 62,
+  "reconstruction": {
+    "base_case_index": 0,
+    "fine_file": "q2d_cmr_18_8_test.h5",
+    "fine_case_index": 0,
+    "fine_shape": [
+      18,
+      8
+    ]
+  }
+}

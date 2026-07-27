@@ -1,0 +1,11 @@
+.git/
+.venv/
+__pycache__/
+.pytest_cache/
+
+src/chem_operator/scripts/q2d/
+
+core
+core.*
+**/core
+**/core.*

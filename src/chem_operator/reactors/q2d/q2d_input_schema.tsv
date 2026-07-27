@@ -1,0 +1,75 @@
+dat_key	param_name	value_type	case_section	case_key	template_section	comment
+POROSITY_LUMEN	porosity_lumen	float	geometry	POROSITY_LUMEN	LUMEN	Porosity [] (Lumen)
+TORTUOSITY_LUMEN	tortuosity_lumen	float	geometry	TORTUOSITY_LUMEN	LUMEN	Tortuosity [] (Lumen)
+PARTICLEDIA_LUMEN	particle_diameter_lumen	float	geometry	PARTICLEDIA_LUMEN	LUMEN	Particle Diameter [m] (Lumen)
+PORERAD_LUMEN	pore_radius_lumen	float	geometry	PORERAD_LUMEN	LUMEN	Pore radius [m] (Lumen)
+CHANNELRAD_LUMEN	channel_radius_lumen	float	geometry	CHANNELRAD_LUMEN	LUMEN	Radius of the reactor channel [m] (Lumen)
+SPECIFICAREA_LUMEN	specific_area_lumen	float	geometry	SPECIFICAREA_LUMEN	LUMEN	Catalyst specific area [1/m] (Lumen)
+LENGTH_LUMEN	length	float	geometry	LENGTH_LUMEN	LUMEN	Length of the catalyst bed [m] (Lumen)
+MICROPOROSITY_LUMEN	microporosity_lumen	float	geometry	MICROPOROSITY_LUMEN	LUMEN	Porosity of micro-pores [] (Lumen)
+MICROPORERAD_LUMEN	micropore_radius_lumen	float	geometry	MICROPORERAD_LUMEN	LUMEN	Radius of micro-pores [m] (Lumen)
+GASCTIFILE_LUMEN	gas_file_lumen	str	mechanism_parameters	GASCTIFILE_LUMEN	LUMEN Filename	Name of the CTI/YAML file containing gas phase (Lumen)
+GASPHASE_LUMEN	gas_phase_lumen	str	mechanism_parameters	GASPHASE_LUMEN	LUMEN Filename	Name of the gas phase in CTI/YAML file (Lumen)
+SURFCTIFILE_LUMEN	surface_file_lumen	str	mechanism_parameters	SURFCTIFILE_LUMEN	LUMEN Filename	Name of the CTI/YAML file containing surface phase (Lumen)
+SURFPHASE_LUMEN	surface_phase_lumen	str	mechanism_parameters	SURFPHASE_LUMEN	LUMEN Filename	Name of the surface phase in CTI/YAML file (Lumen)
+SOLVE_SUPPORT	solve_support	bool	controls	SOLVE_SUPPORT	SUPPORT	Solve transport inside the support
+POROSITY_SUPPORT	porosity_support	float	geometry	POROSITY_SUPPORT	SUPPORT	Porosity [] (Support)
+TORTUOSITY_SUPPORT	tortuosity_support	float	geometry	TORTUOSITY_SUPPORT	SUPPORT	Tortuosity [] (Support)
+PARTICLEDIA_SUPPORT	particle_diameter_support	float	geometry	PARTICLEDIA_SUPPORT	SUPPORT	Particle Diameter [m] (Support)
+PORERAD_SUPPORT	pore_radius_support	float	geometry	PORERAD_SUPPORT	SUPPORT	Pore radius [m] (Support)
+CHANNELRAD_SUPPORT	channel_radius_support	float	geometry	CHANNELRAD_SUPPORT	SUPPORT	Radius of the reactor channel [m] (Support)
+SPECIFICAREA_SUPPORT	specific_area_support	float	geometry	SPECIFICAREA_SUPPORT	SUPPORT	Catalyst specific area [1/m] (Support)
+THICKNESS_SUPPORT	thickness_support	float	geometry	THICKNESS_SUPPORT	SUPPORT	Thickness of the support [m]
+MICROPOROSITY_SUPPORT	microporosity_support	float	geometry	MICROPOROSITY_SUPPORT	SUPPORT	Porosity of micro-pores [] (Support)
+MICROPORERAD_SUPPORT	micropore_radius_support	float	geometry	MICROPORERAD_SUPPORT	SUPPORT	Radius of micro-pores [m] (Support)
+GASCTIFILE_SUPPORT	gas_file_support	str	mechanism_parameters	GASCTIFILE_SUPPORT	SUPPORT Filename	Name of the CTI/YAML file containing gas phase (Support)
+GASPHASE_SUPPORT	gas_phase_support	str	mechanism_parameters	GASPHASE_SUPPORT	SUPPORT Filename	Name of the gas phase in CTI/YAML file (Support)
+SURFCTIFILE_SUPPORT	surface_file_support	str	mechanism_parameters	SURFCTIFILE_SUPPORT	SUPPORT Filename	Name of the CTI/YAML file containing surface phase (Support)
+SURFPHASE_SUPPORT	surface_phase_support	str	mechanism_parameters	SURFPHASE_SUPPORT	SUPPORT Filename	Name of the surface phase in CTI/YAML file (Support)
+INLETTEMP	T0	float	initial_conditions	gas/T	Inlet conditions	Inlet temperature [K]
+OUTLETPRES	P0	float	boundary_conditions	outlet/P	Inlet conditions	Outlet pressure [Pa]
+SCCM	sccm	float	controls	SCCM	Inlet conditions	Inlet flow rate in terms of SCCM
+VEL	inlet_velocity	float	controls	VEL	Inlet conditions	Optional inlet velocity [m/s]
+SPECIESFRAC	species_fraction_basis	str	initial_conditions	species_fraction_basis	Inlet species MASS/MOLE fractions	Specify inlet composition in terms of MOLE/MASS fractions []
+SOLVEENERGY	solve_energy	bool	controls	SOLVEENERGY	Solve energy	Solve energy equation
+TWALL	wall_temperature	float	controls	TWALL	Solve energy	Wall temperature [K]
+HCOEFF	heat_transfer_coefficient	float	controls	HCOEFF	Solve energy	Heat transfer coefficient
+REFINE	refine	bool	solver_parameters	REFINE	Refine mesh	Refine mesh
+TRAN_MODEL	transport_model	str	controls	TRAN_MODEL	Axial transport	Transport model
+MESHPOINTS	mesh_points	int	solver_parameters	MESHPOINTS	Axial transport	Number of axial mesh points
+RAND_PORE_MODEL	random_pore_model	bool	controls	RAND_PORE_MODEL	Axial transport	Include random-pore model
+RADIAL_VEL	solve_radial_velocity	bool	controls	RADIAL_VEL	Radial velocity	Solve radial velocity
+LUMEN_POINTS	lumen_points	int	controls	LUMEN_POINTS	Radial transport	Number of radial mesh points inside the Lumen
+SUPPORT_POINTS	support_points	int	controls	SUPPORT_POINTS	Radial transport	Number of radial mesh points inside the Support
+SOLVE_SOLID	solve_solid	bool	controls	SOLVE_SOLID	Solid Particle transport	Solve solid particle transport
+COND_SOLID	solid_conductivity	float	controls	COND_SOLID	Solid Particle transport	Thermal conductivity of the solid particle [W/m/K]
+DENSITY_SOLID	solid_density	float	controls	DENSITY_SOLID	Solid Particle transport	Density of the solid particle
+CP_SOLID	solid_cp	float	controls	CP_SOLID	Solid Particle transport	Specific heat of the solid particle [J/kg/K]
+EMISSIVITY	emissivity	float	controls	EMISSIVITY	Solid Particle transport	Emissivity
+T_ENV	environment_temperature	float	controls	T_ENV	Solid Particle transport	Environmental temperature [K]
+A_ENV	environment_area	float	controls	A_ENV	Solid Particle transport	Interface area of porous media with surroundings
+MEMSOLVE	solve_membrane	bool	controls	MEMSOLVE	Parameters to solve membrane fluxes	Include membrane flux
+MEMSPNAME	membrane_species	str	controls	MEMSPNAME	Parameters to solve membrane fluxes	Membrane-permeable species name
+MEMTHICKNESS	membrane_thickness	float	controls	MEMTHICKNESS	Parameters to solve membrane fluxes	Thickness of the membrane [m]
+Ea_R	membrane_ea_over_r	float	controls	Ea_R	Parameters to solve membrane fluxes	Ratio Ea/R for the membrane material [K]
+k0	membrane_k0	float	controls	k0	Parameters to solve membrane fluxes	Permeability constant
+SWEEPPRES	sweep_pressure	float	controls	SWEEPPRES	Parameters to solve membrane fluxes	Sweep side pressure [Pa]
+ATOL_SS	atol_ss	float	solver_parameters	ATOL_SS	Solver Tolerances	Absolute tolerance for steady solver
+RTOL_SS	rtol_ss	float	solver_parameters	RTOL_SS	Solver Tolerances	Relative tolerance for steady solver
+ATOL_TS	atol_ts	float	solver_parameters	ATOL_TS	Solver Tolerances	Absolute tolerance for transient solver
+RTOL_TS	rtol_ts	float	solver_parameters	RTOL_TS	Solver Tolerances	Relative tolerance for transient solver
+LOGLEVEL	loglevel	int	solver_parameters	LOGLEVEL	Solver Tolerances	Loglevel
+MAXGRIDPOINTS	max_grid_points	int	solver_parameters	MAXGRIDPOINTS	Solver Tolerances	Maximum allowed grid points
+MAXTIMESTEPS	max_time_steps	int	solver_parameters	MAXTIMESTEPS	Solver Tolerances	Maximum number of time-steps allowed before successful steady-state solve
+MINTIMESTEPS	min_time_steps	int	solver_parameters	MINTIMESTEPS	Solver Tolerances	Minimum number of time-steps allowed before successful steady-state solve
+MINTIMESTEPSIZE	min_time_step_size	float	solver_parameters	MINTIMESTEPSIZE	Solver Tolerances	Minimum time-step size
+MAXTIMESTEPSIZE	max_time_step_size	float	solver_parameters	MAXTIMESTEPSIZE	Solver Tolerances	Maximum time-step size
+MAX_GRID_RATIO	max_grid_ratio	float	solver_parameters	MAX_GRID_RATIO	Grid Refining	Maximum grid ratio
+MAX_SLOPE	max_slope	float	solver_parameters	MAX_SLOPE	Grid Refining	Maximum slope
+MAX_CURVE	max_curve	float	solver_parameters	MAX_CURVE	Grid Refining	Maximum curve
+PRUNE	prune	float	solver_parameters	PRUNE	Grid Refining	Prune threshold
+RESTART	restart	bool	controls	RESTART	Restart	Restart from previous solution
+INITGUESS_FROMFILE	init_guess_from_file	bool	controls	INITGUESS_FROMFILE	Initial guess	Use initial guess from file
+SOLVE_CHANNEL	annular_channel	bool	controls	SOLVE_CHANNEL	Solve Annular channel flows	Include annular channel
+CHANNELRAD_ANNULUS	channel_radius_annulus	float	geometry	CHANNELRAD_ANNULUS	Solve Annular channel flows	Outer radius of the annular channel
+CHANNEL_VEL	annular_channel_velocity	float	controls	CHANNEL_VEL	Solve Annular channel flows	Velocity inside the annular channel

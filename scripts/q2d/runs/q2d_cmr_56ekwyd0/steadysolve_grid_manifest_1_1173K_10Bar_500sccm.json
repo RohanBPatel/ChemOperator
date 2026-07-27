@@ -1,0 +1,50 @@
+{
+  "csv_file": "steadysolve_grid_1_1173K_10Bar_500sccm.csv",
+  "input_file": "input.dat",
+  "format": "long_csv_one_row_per_z_r_cell",
+  "dimensions": {
+    "axial_points": 20,
+    "lumen_points": 3,
+    "support_points": 1,
+    "reactor_radial_points": 4,
+    "total_radial_points": 4
+  },
+  "region_counts": {
+    "lumen": 3,
+    "support": 1,
+    "annular_channel": 0
+  },
+  "solver_flags": {
+    "solve_energy": 0,
+    "solve_solid": 1,
+    "solve_support": 1,
+    "solve_radial_velocity": 0,
+    "solve_membrane": 1,
+    "solve_annular_channel": 0,
+    "transport_model": "FICK"
+  },
+  "mechanisms": {
+    "lumen_gas_file": "methaneReformingNi.yaml",
+    "lumen_gas_phase": "gas",
+    "lumen_surface_file": "methaneReformingNi.yaml",
+    "lumen_surface_phase": "Ni_surface",
+    "support_gas_file": "methaneReformingNi.yaml",
+    "support_gas_phase": "gas",
+    "support_surface_file": "methaneReformingNi.yaml",
+    "support_surface_phase": "Ni_surface"
+  },
+  "units": {
+    "z": "m", "r": "m", "pressure": "Pa", "density": "kg/m^3",
+    "mean_molecular_weight": "kg/kmol", "cp_mass": "J/kg/K",
+    "velocity_axial": "m/s", "velocity_radial": "m/s",
+    "gas_temperature": "K", "solid_temperature": "K",
+    "viscosity": "Pa*s", "thermal_conductivity": "W/m/K",
+    "specific_surface_area": "1/m", "particle_diameter": "m",
+    "pore_radius": "m", "wdot": "kmol/m^3/s",
+    "sdot": "kmol/m^2/s", "axial_flux": "kg/m^2/s",
+    "radial_flux": "kg/m^2/s"
+  },
+  "gas_species": ["CH4", "CO", "O2", "CO2", "H2", "H2O", "AR"],
+  "surface_species": ["H(s)", "O(s)", "CH4(s)", "H2O(s)", "CO2(s)", "CO(s)", "OH(s)", "C(s)", "HCO(s)", "CH(s)", "CH3(s)", "CH2(s)", "COOH(s)", "Ni(s)"],
+  "support_surface_species": ["H(s)", "O(s)", "CH4(s)", "H2O(s)", "CO2(s)", "CO(s)", "OH(s)", "C(s)", "HCO(s)", "CH(s)", "CH3(s)", "CH2(s)", "COOH(s)", "Ni(s)"]
+}

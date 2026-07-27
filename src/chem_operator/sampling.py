@@ -1,5 +1,6 @@
 from dataclasses import dataclass
-from typing import Any, Callable, Protocol, Sequence
+from collections.abc import Callable, Sequence
+from typing import Any, Protocol
 import numpy as np
 
 
