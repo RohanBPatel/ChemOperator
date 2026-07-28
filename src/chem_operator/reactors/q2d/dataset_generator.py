@@ -1050,7 +1050,7 @@ if __name__ == "__main__":
             use_reference_if_no_solver=False,
         )
         q2d_dataset_generator = SimulationDatasetGenerator(q2d_simulator, DEFAULT_OUTPUT_DIR)
-        records_splits = q2d_dataset_generator.generate_splits(n_cases=80)
+        records_splits = q2d_dataset_generator.generate_splits(n_cases=100)
         q2d_dataset_generator.save_splits(records_splits, overwrite=True)
 
     if True:

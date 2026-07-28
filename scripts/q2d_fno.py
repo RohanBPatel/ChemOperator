@@ -67,12 +67,12 @@ METRIC = "best_valid_loss"
 
 # Run-mode flags. Leave both false for tuning, training, and evaluation.
 TRAIN_BEST_CONFIG_ONLY = False
-PLOT_SAVED_MODEL_ONLY = True
+PLOT_SAVED_MODEL_ONLY = False
 
-TUNE_SAMPLES = 20
-TUNE_EPOCHS = 25
-FINAL_EPOCHS = 50
-EVALUATION_BATCH_SIZE = 4
+TUNE_SAMPLES = 25
+TUNE_EPOCHS = 30
+FINAL_EPOCHS = 75
+EVALUATION_BATCH_SIZE = 2
 
 CPUS_PER_TRIAL = 2
 GPUS_PER_TRIAL = 1 if torch.cuda.is_available() else 0
@@ -114,7 +114,7 @@ OUTPUT_CHANNELS = (
         "species",
         "X",
         species="CH4",
-        display_name="CH4 mole fraction",
+        display_name="Methane",
         unit="-",
     ),
     FNOChannel(
@@ -122,9 +122,17 @@ OUTPUT_CHANNELS = (
         "species",
         "X",
         species="H2",
-        display_name="H2 mole fraction",
+        display_name="Hydrogen",
         unit="-",
     ),
+    # FNOChannel(
+    #     "theta_C(s)",
+    #     "species",
+    #     "theta",
+    #     species="C(s)",
+    #     display_name="Carbon Accumulation",
+    #     unit="-",
+    # ),
 )
 
 
@@ -317,6 +325,7 @@ def model_from_config(
         hidden_channels=int(config["hidden_channels"]),
         n_layers=int(config["n_layers"]),
         positional_embedding="grid",
+        domain_padding=float(config.get("domain_padding", 0.0)),
     ).to(device)
 
 
@@ -504,13 +513,14 @@ def tune_hyperparameters(
     tuner = tune.Tuner(
         trainable,
         param_space={
-            "modes_z": tune.choice([4, 5]),
-            "modes_r": tune.choice([2, 3]),
-            "hidden_channels": tune.choice([16, 24, 32]),
+            "modes_z": tune.choice([4, 5, 6]),
+            "modes_r": tune.choice([2, 3, 4]),
+            "hidden_channels": tune.choice([16, 20, 24, 28, 32]),
             "n_layers": tune.choice([6, 7, 8, 9]),
             "learning_rate": tune.loguniform(1.0e-4, 4.0e-3),
             "weight_decay": tune.loguniform(1.0e-8, 1.0e-4),
-            "batch_size": tune.choice([2, 4]),
+            "batch_size": 2, #tune.choice([2, 4]),
+            "domain_padding": tune.choice([0.0, 0.05, 0.1, 0.15, 0.2]),
         },
         tune_config=tune.TuneConfig(
             search_alg=search,
@@ -653,11 +663,12 @@ def resize_model_input(
     model_input: torch.Tensor,
     shape: tuple[int, int],
 ) -> torch.Tensor:
-    """Resize channel-first inputs to the FNO base mesh.
+    """Resize channel-first inputs to a requested FNO evaluation mesh.
 
     Broadcast scalar channels remain exactly constant. This interpolation also
-    makes future continuous physical input fields configuration-compatible with
-    the fixed base-resolution superresolution workflow.
+    makes future continuous physical input fields configuration-compatible
+    with zero-shot superresolution. Evaluating directly on the requested mesh
+    also keeps NeuralOperator domain padding and unpadding resolution-consistent.
     """
     if tuple(model_input.shape[-2:]) == tuple(shape):
         return model_input
@@ -927,10 +938,11 @@ def make_reconstruction_figures(  # pylint: disable=too-many-locals
         fine = fine_data[fine_index]
         with torch.no_grad():
             coarse_prediction = model(base["x"].unsqueeze(0).to(device)).cpu()[0]
-            fine_prediction = model(
-                base["x"].unsqueeze(0).to(device),
-                output_shape=(fine_file.n_z, fine_file.n_r),
-            ).cpu()[0]
+            fine_input = resize_model_input(
+                base["x"],
+                (fine_file.n_z, fine_file.n_r),
+            )
+            fine_prediction = model(fine_input.unsqueeze(0).to(device)).cpu()[0]
         coarse_truth = base_data.denormalize_output(base["y"])
         coarse_prediction = base_data.denormalize_output(coarse_prediction)
         fine_truth = fine_data.denormalize_output(fine["y"])
@@ -982,7 +994,6 @@ def _synchronize(device: torch.device) -> None:
 def inference_latency(
     model: FNO,
     model_input: torch.Tensor,
-    output_shape: tuple[int, int],
     *,
     device: torch.device,
 ) -> float:
@@ -991,13 +1002,13 @@ def inference_latency(
     model.eval()
     with torch.no_grad():
         for _ in range(LATENCY_WARMUPS):
-            model(model_input, output_shape=output_shape)
+            model(model_input)
         _synchronize(device)
         durations = []
         for _ in range(LATENCY_REPEATS):
             _synchronize(device)
             tic = time.perf_counter()
-            model(model_input, output_shape=output_shape)
+            model(model_input)
             _synchronize(device)
             durations.append(time.perf_counter() - tic)
     return statistics.median(durations)
@@ -1027,12 +1038,13 @@ def benchmark_meshes(  # pylint: disable=too-many-locals
                         f"{mesh_file.path.name} declares "
                         f"{mesh_file.n_z}x{mesh_file.n_r} but stores {target_shape}."
                     )
-                base_input = resize_model_input(sample["x"], training_shape)
+                training_input = resize_model_input(sample["x"], training_shape)
+                prediction_input = resize_model_input(
+                    training_input,
+                    target_shape,
+                )
                 with torch.no_grad():
-                    prediction = model(
-                        base_input.unsqueeze(0).to(device),
-                        output_shape=target_shape,
-                    )
+                    prediction = model(prediction_input.unsqueeze(0).to(device))
                 global_l2 = float(
                     _relative_l2_per_sample(prediction, target).cpu()[0]
                 )
@@ -1052,8 +1064,7 @@ def benchmark_meshes(  # pylint: disable=too-many-locals
                     "solver_wall_time_s": float(metadata["wall_time"]),
                     "fno_wall_time_s": inference_latency(
                         model,
-                        base_input,
-                        target_shape,
+                        prediction_input,
                         device=device,
                     ),
                 }
@@ -1138,8 +1149,8 @@ def plot_mesh_wall_time(
     """Plot inference, solver, tuning, and final-training wall times."""
     figure, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
     for column, label in (
-        ("solver_wall_time_s", "numerical solver"),
-        ("fno_wall_time_s", "FNO"),
+        ("solver_wall_time_s", "1 evaluation of numerical solver"),
+        ("fno_wall_time_s", "1 evaluation of FNO"),
     ):
         x, mean, minimum, maximum = _grouped_summary(frame, column)
         axis.plot(x, mean, marker="o", label=label)
@@ -1420,6 +1431,9 @@ def main() -> None:  # pylint: disable=too-many-locals
                 "final_training_seconds": training_seconds,
                 "best_epoch": int(np.argmin(history["valid_loss"]) + 1),
                 "best_validation_loss": float(min(history["valid_loss"])),
+                "domain_padding": float(
+                    best_config.get("domain_padding", 0.0)
+                ),
                 "training_shape": list(training_shape),
                 "training_mesh_points": math.prod(training_shape),
             }
@@ -1481,6 +1495,7 @@ def main() -> None:  # pylint: disable=too-many-locals
         "ray_tuning_seconds": tune_seconds,
         "best_epoch": int(np.argmin(history["valid_loss"]) + 1),
         "best_validation_loss": float(min(history["valid_loss"])),
+        "domain_padding": float(best_config.get("domain_padding", 0.0)),
     }
     with metrics_path.open("w", encoding="utf-8") as file:
         json.dump(metrics, file, indent=2)

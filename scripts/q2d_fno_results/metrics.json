@@ -1,31 +1,32 @@
 {
-  "normalized_relative_l2": 0.009261528961360455,
-  "normalized_relative_l2_velocity_axial": 0.009908074513077736,
-  "normalized_relative_l2_X_CH4": 0.007408888079226017,
-  "normalized_relative_l2_X_H2": 0.010022145695984364,
-  "parameters": 58731,
-  "final_training_seconds": 44.2954419939997,
-  "ray_tuning_seconds": 425.6209487219967,
-  "best_epoch": 35,
-  "best_validation_loss": 0.008716586045920849,
+  "normalized_relative_l2": 0.011519121006131172,
+  "normalized_relative_l2_velocity_axial": 0.011156165972352028,
+  "normalized_relative_l2_X_CH4": 0.008698949590325356,
+  "normalized_relative_l2_X_H2": 0.013568262569606304,
+  "parameters": 134739,
   "training_shape": [
-    12,
+    14,
     6
   ],
-  "training_mesh_points": 72,
-  "mesh_benchmark_rows": 62,
+  "training_mesh_points": 84,
+  "mesh_benchmark_rows": 189,
   "reconstruction": {
-    "training_file": "q2d_cmr_12_6_test.h5",
+    "training_file": "q2d_cmr_14_6_test.h5",
     "training_shape": [
-      12,
+      14,
       6
     ],
     "base_case_index": 0,
-    "fine_file": "q2d_cmr_18_8_test.h5",
+    "fine_file": "q2d_cmr_20_10_test.h5",
     "fine_case_index": 0,
     "fine_shape": [
-      18,
-      8
+      20,
+      10
     ]
-  }
+  },
+  "final_training_seconds": 78.4715089599922,
+  "ray_tuning_seconds": 738.638750750004,
+  "best_epoch": 64,
+  "best_validation_loss": 0.011703242237369219,
+  "domain_padding": 0.15
 }
