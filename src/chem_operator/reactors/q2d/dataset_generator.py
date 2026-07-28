@@ -45,7 +45,7 @@ DEFAULT_OUTPUT_DIR = datasets_path / "q2d_cmr"
 DEFAULT_FIGURE_DIR = DEFAULT_OUTPUT_DIR / "figures"
 DEFAULT_RUN_DIR = DEFAULT_OUTPUT_DIR / "runs"
 INPUT_SCHEMA_PATH = Path(__file__).resolve().parent / "q2d_input_schema.tsv"
-DEFAULT_SOLVER_TIMEOUT_S = 5 * 60.0
+DEFAULT_SOLVER_TIMEOUT_S = 8 * 60.0
 
 GAS_SPECIES_FALLBACK = ["CH4", "CO", "O2", "CO2", "H2", "H2O", "AR"]
 SURFACE_SPECIES_FALLBACK = [
@@ -1036,11 +1036,11 @@ if __name__ == "__main__":
 
     parameter_space = {
         "annular_channel": Constant(False),  # Grid([False, True]),
-        "T0": Uniform(1160.0, 1190.0),
-        "sccm": Uniform(490.0, 510.0),
+        "T0": Uniform(1150.0, 1240.0),
+        "sccm": Uniform(470.0, 530.0),
         "P0": Constant(1e6),
         "lumen_points": Constant(6),
-        "mesh_points": Constant(12),
+        "mesh_points": Constant(14),
         "refine": Constant(False)
     }
     if True:
@@ -1050,13 +1050,13 @@ if __name__ == "__main__":
             use_reference_if_no_solver=False,
         )
         q2d_dataset_generator = SimulationDatasetGenerator(q2d_simulator, DEFAULT_OUTPUT_DIR)
-        records_splits = q2d_dataset_generator.generate_splits(n_cases=50)
-        q2d_dataset_generator.save_splits(records_splits, overwrite=False)
+        records_splits = q2d_dataset_generator.generate_splits(n_cases=80)
+        q2d_dataset_generator.save_splits(records_splits, overwrite=True)
 
-    if False:
-        for n_z in range(17, 20+1):
+    if True:
+        for n_z in range(12, 20+1):
             print(f"{n_z=}")
-            for n_r in range(8, 10+1):
+            for n_r in range(4, 10+1):
                 test_parameter_space = parameter_space | {"mesh_points": Constant(n_z), "lumen_points": Constant(n_r)}
                 test_q2d_simulator = CMRSim(
                     parameter_space=test_parameter_space,
@@ -1066,5 +1066,5 @@ if __name__ == "__main__":
                 test_q2d_dataset_generator = SimulationDatasetGenerator(test_q2d_simulator, DEFAULT_OUTPUT_DIR)
                 test_q2d_simulator.name += f"_{n_z}_{n_r}"
 
-                records_test_split = test_q2d_dataset_generator.generate_split(f"test", 2, test_q2d_dataset_generator.seed + 3)
+                records_test_split = test_q2d_dataset_generator.generate_split(f"test", 3, test_q2d_dataset_generator.seed + 3)
                 test_q2d_dataset_generator.save_split("test", records_test_split, overwrite=True)

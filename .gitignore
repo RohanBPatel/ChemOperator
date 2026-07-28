@@ -13,5 +13,7 @@ wheels/
 # datasets
 *.h5
 
+# ray
+ray_results/
 core
 core.*

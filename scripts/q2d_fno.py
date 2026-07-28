@@ -65,10 +65,14 @@ FILE_STEM = "q2d_cmr"
 SEED = 42
 METRIC = "best_valid_loss"
 
-TUNE_SAMPLES = 15
-TUNE_EPOCHS = 40
+# Run-mode flags. Leave both false for tuning, training, and evaluation.
+TRAIN_BEST_CONFIG_ONLY = False
+PLOT_SAVED_MODEL_ONLY = True
+
+TUNE_SAMPLES = 20
+TUNE_EPOCHS = 25
 FINAL_EPOCHS = 50
-EVALUATION_BATCH_SIZE = 16
+EVALUATION_BATCH_SIZE = 4
 
 CPUS_PER_TRIAL = 2
 GPUS_PER_TRIAL = 1 if torch.cuda.is_available() else 0
@@ -79,7 +83,6 @@ LATENCY_REPEATS = 20
 RELATIVE_L2_EPS = 1.0e-8
 
 MESH_FILE_PATTERN = re.compile(r"q2d_cmr_(\d+)_(\d+)_test\.h5")
-
 
 INPUT_CHANNELS = (
     FNOChannel(
@@ -501,13 +504,13 @@ def tune_hyperparameters(
     tuner = tune.Tuner(
         trainable,
         param_space={
-            "modes_z": tune.choice([4, 6, 8]),
-            "modes_r": tune.choice([3, 4, 5]),
-            "hidden_channels": tune.choice([16, 32, 64]),
-            "n_layers": tune.choice([3, 4, 5]),
-            "learning_rate": tune.loguniform(1.0e-4, 3.0e-3),
+            "modes_z": tune.choice([4, 5]),
+            "modes_r": tune.choice([2, 3]),
+            "hidden_channels": tune.choice([16, 24, 32]),
+            "n_layers": tune.choice([6, 7, 8, 9]),
+            "learning_rate": tune.loguniform(1.0e-4, 4.0e-3),
             "weight_decay": tune.loguniform(1.0e-8, 1.0e-4),
-            "batch_size": tune.choice([2, 4, 8]),
+            "batch_size": tune.choice([2, 4]),
         },
         tune_config=tune.TuneConfig(
             search_alg=search,
@@ -681,6 +684,32 @@ def write_history(
     frame.to_csv(path, index=False)
 
 
+def read_history(path: Path) -> dict[str, list[float]]:
+    """Load and validate a previously saved loss history."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"Training history not found at {path}. Train the model first."
+        )
+    frame = pd.read_csv(path)
+    required = {"train_loss", "valid_loss"}
+    missing = required - set(frame.columns)
+    if missing:
+        raise ValueError(
+            f"Training history {path} is missing columns {sorted(missing)}."
+        )
+    history = {
+        name: frame[name].astype(float).tolist()
+        for name in ("train_loss", "valid_loss")
+    }
+    if not history["train_loss"] or any(
+        not math.isfinite(value)
+        for values in history.values()
+        for value in values
+    ):
+        raise ValueError(f"Training history {path} is empty or non-finite.")
+    return history
+
+
 def plot_history(
     path: Path,
     history: Mapping[str, list[float]],
@@ -692,7 +721,7 @@ def plot_history(
     axis.semilogy(epochs, history["valid_loss"], label="Validation")
     axis.set_xlabel("Epoch")
     axis.set_ylabel("Normalized relative L2")
-    axis.set_title("Q2D catalytic membrane reactor FNO")
+    axis.set_title("catalytic membrane reactor FNO")
     axis.grid(alpha=0.25)
     axis.legend()
     figure.savefig(path, dpi=180)
@@ -927,7 +956,7 @@ def make_reconstruction_figures(  # pylint: disable=too-many-locals
             fine["z"],
             fine["r"],
             title=(
-                "Q2D FNO superresolution: "
+                "2D CMR FNO superresolution: "
                 f"{training_shape[0]}x{training_shape[1]} to "
                 f"{fine_file.n_z}x{fine_file.n_r}"
             ),
@@ -1109,7 +1138,7 @@ def plot_mesh_wall_time(
     """Plot inference, solver, tuning, and final-training wall times."""
     figure, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
     for column, label in (
-        ("solver_wall_time_s", "Q2D solver"),
+        ("solver_wall_time_s", "numerical solver"),
         ("fno_wall_time_s", "FNO"),
     ):
         x, mean, minimum, maximum = _grouped_summary(frame, column)
@@ -1118,13 +1147,13 @@ def plot_mesh_wall_time(
     for seconds, label, color, linestyle in (
         (
             ray_tuning_seconds,
-            "Ray parameter search",
+            "Finding the best FNO model",
             "tab:purple",
             "-.",
         ),
         (
             final_training_seconds,
-            "Final FNO training",
+            "FNO training",
             "tab:green",
             ":",
         ),
@@ -1148,11 +1177,216 @@ def plot_mesh_wall_time(
     plt.close(figure)
 
 
+def load_json_mapping(path: Path, description: str) -> dict[str, Any]:
+    """Load a required JSON object."""
+    if not path.is_file():
+        raise FileNotFoundError(
+            f"{description} not found at {path}. Run the full workflow first."
+        )
+    with path.open("r", encoding="utf-8") as file:
+        value = json.load(file)
+    if not isinstance(value, dict):
+        raise ValueError(f"{description} at {path} must contain a JSON object.")
+    return value
+
+
+def train_best_config(  # pylint: disable=too-many-arguments
+    best_config: Mapping[str, Any],
+    normalizer: ZScoreNormalizer,
+    geometry: tuple[float, float],
+    training_shape: tuple[int, int],
+    *,
+    device: torch.device,
+) -> tuple[dict[str, list[float]], float]:
+    """Train and save one model using an already selected configuration."""
+    train_raw, train_data = make_adapter(
+        DATA_DIR / f"{FILE_STEM}_train.h5",
+        normalizer,
+        geometry,
+    )
+    valid_raw, valid_data = make_adapter(
+        DATA_DIR / f"{FILE_STEM}_valid.h5",
+        normalizer,
+        geometry,
+    )
+    try:
+        stored_training_shape = adapter_spatial_shape(
+            train_data,
+            f"{FILE_STEM}_train.h5",
+        )
+        valid_shape = adapter_spatial_shape(
+            valid_data,
+            f"{FILE_STEM}_valid.h5",
+        )
+        if stored_training_shape != training_shape:
+            raise ValueError(
+                f"Training mesh changed from {training_shape} to "
+                f"{stored_training_shape}."
+            )
+        if valid_shape != training_shape:
+            raise ValueError(
+                f"Validation mesh {valid_shape} differs from the discovered "
+                f"training mesh {training_shape}."
+            )
+        model, history, training_seconds = train_model(
+            best_config,
+            train_data,
+            valid_data,
+            epochs=FINAL_EPOCHS,
+            device=device,
+            print_epochs=True,
+        )
+    finally:
+        train_raw.close()
+        valid_raw.close()
+    print(f"Final FNO training time: {training_seconds:.6f} s")
+
+    save_checkpoint(
+        OUTPUT_DIR / "fno.pt",
+        model,
+        best_config,
+        normalizer,
+        geometry,
+        training_shape,
+    )
+    write_history(OUTPUT_DIR / "history.csv", history)
+    plot_history(OUTPUT_DIR / "training_validation_loss.png", history)
+    return history, training_seconds
+
+
+def use_saved_model(  # pylint: disable=too-many-locals
+    device: torch.device,
+    *,
+    calculate_metrics: bool,
+    ray_tuning_seconds: float,
+    final_training_seconds: float,
+) -> dict[str, Any]:
+    """Load the checkpoint and regenerate Q2D evaluations and figures."""
+    checkpoint_path = OUTPUT_DIR / "fno.pt"
+    if not checkpoint_path.is_file():
+        raise FileNotFoundError(
+            f"Saved model not found at {checkpoint_path}. Train it first."
+        )
+    model, normalizer, geometry, training_shape = load_checkpoint(
+        checkpoint_path,
+        device,
+    )
+
+    training_raw, training_data = make_adapter(
+        DATA_DIR / f"{FILE_STEM}_train.h5",
+        normalizer,
+        geometry,
+    )
+    try:
+        stored_training_shape = adapter_spatial_shape(
+            training_data,
+            f"{FILE_STEM}_train.h5",
+        )
+    finally:
+        training_raw.close()
+    if stored_training_shape != training_shape:
+        raise RuntimeError(
+            f"Checkpoint training mesh {training_shape} differs from the "
+            f"current training dataset mesh {stored_training_shape}."
+        )
+
+    test_raw, test_data = make_adapter(
+        DATA_DIR / f"{FILE_STEM}_test.h5",
+        normalizer,
+        geometry,
+    )
+    try:
+        test_metrics = (
+            evaluate(
+                model,
+                test_data,
+                batch_size=EVALUATION_BATCH_SIZE,
+                device=device,
+            )
+            if calculate_metrics
+            else {}
+        )
+    finally:
+        test_raw.close()
+
+    plot_history(
+        OUTPUT_DIR / "training_validation_loss.png",
+        read_history(OUTPUT_DIR / "history.csv"),
+    )
+
+    mesh_files = discover_mesh_files(DATA_DIR)
+    reconstruction = make_reconstruction_figures(
+        model,
+        normalizer,
+        geometry,
+        mesh_files,
+        training_shape,
+        device=device,
+    )
+    benchmark_path = OUTPUT_DIR / "mesh_benchmark.csv"
+    if calculate_metrics:
+        benchmark = benchmark_meshes(
+            model,
+            normalizer,
+            geometry,
+            mesh_files,
+            training_shape,
+            device=device,
+        )
+        benchmark.to_csv(benchmark_path, index=False)
+    else:
+        if not benchmark_path.is_file():
+            raise FileNotFoundError(
+                f"Mesh benchmark not found at {benchmark_path}. "
+                "Run the full workflow first."
+            )
+        benchmark = pd.read_csv(benchmark_path)
+    if calculate_metrics:
+        print(benchmark.to_string(index=False))
+    plot_mesh_l2(
+        OUTPUT_DIR / "mesh_l2_vs_points.png",
+        benchmark,
+        training_shape,
+    )
+    plot_mesh_wall_time(
+        OUTPUT_DIR / "mesh_wall_time_vs_points.png",
+        benchmark,
+        training_shape,
+        ray_tuning_seconds=ray_tuning_seconds,
+        final_training_seconds=final_training_seconds,
+    )
+    return {
+        **test_metrics,
+        "parameters": count_parameters(model),
+        "training_shape": list(training_shape),
+        "training_mesh_points": math.prod(training_shape),
+        "mesh_benchmark_rows": int(len(benchmark)),
+        "reconstruction": reconstruction,
+    }
+
+
 def main() -> None:  # pylint: disable=too-many-locals
-    """Tune, train, evaluate, plot, and benchmark the Q2D FNO."""
+    """Run the selected tuning, training, or saved-model plotting workflow."""
+    if TRAIN_BEST_CONFIG_ONLY and PLOT_SAVED_MODEL_ONLY:
+        raise ValueError(
+            "TRAIN_BEST_CONFIG_ONLY and PLOT_SAVED_MODEL_ONLY cannot both be true."
+        )
+
     OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
-    (OUTPUT_DIR / "ray_results").mkdir(parents=True, exist_ok=True)
-    RAY_TEMP_DIR.mkdir(parents=True, exist_ok=True)
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+    metrics_path = OUTPUT_DIR / "metrics.json"
+    if PLOT_SAVED_MODEL_ONLY:
+        saved_metrics = load_json_mapping(metrics_path, "Saved metrics")
+        use_saved_model(
+            device,
+            calculate_metrics=False,
+            ray_tuning_seconds=float(saved_metrics["ray_tuning_seconds"]),
+            final_training_seconds=float(
+                saved_metrics["final_training_seconds"]
+            ),
+        )
+        print(f"Plots written to {OUTPUT_DIR}")
+        return
 
     print("Fitting scalar training-only normalization statistics ...")
     normalizer, geometry, training_shape = fit_normalizer(
@@ -1163,7 +1397,40 @@ def main() -> None:  # pylint: disable=too-many-locals
         f"{training_shape[0]}x{training_shape[1]} "
         f"({math.prod(training_shape)} points)"
     )
+    best_config_path = OUTPUT_DIR / "best_config.json"
+    if TRAIN_BEST_CONFIG_ONLY:
+        best_config = load_json_mapping(best_config_path, "Best configuration")
+        history, training_seconds = train_best_config(
+            best_config,
+            normalizer,
+            geometry,
+            training_shape,
+            device=device,
+        )
+        saved_metrics = (
+            load_json_mapping(metrics_path, "Saved metrics")
+            if metrics_path.is_file()
+            else {}
+        )
+        saved_metrics.update(
+            {
+                "parameters": count_parameters(
+                    load_checkpoint(OUTPUT_DIR / "fno.pt", device)[0]
+                ),
+                "final_training_seconds": training_seconds,
+                "best_epoch": int(np.argmin(history["valid_loss"]) + 1),
+                "best_validation_loss": float(min(history["valid_loss"])),
+                "training_shape": list(training_shape),
+                "training_mesh_points": math.prod(training_shape),
+            }
+        )
+        with metrics_path.open("w", encoding="utf-8") as file:
+            json.dump(saved_metrics, file, indent=2)
+        print(f"Model and loss history written to {OUTPUT_DIR}")
+        return
 
+    (OUTPUT_DIR / "ray_results").mkdir(parents=True, exist_ok=True)
+    RAY_TEMP_DIR.mkdir(parents=True, exist_ok=True)
     worker_pythonpath = os.pathsep.join(
         filter(
             None,
@@ -1191,125 +1458,31 @@ def main() -> None:  # pylint: disable=too-many-locals
     finally:
         ray.shutdown()
     tune_seconds = time.perf_counter() - tune_tic
-    with (OUTPUT_DIR / "best_config.json").open("w", encoding="utf-8") as file:
+    with best_config_path.open("w", encoding="utf-8") as file:
         json.dump(best_config, file, indent=2)
 
-    train_raw, train_data = make_adapter(
-        DATA_DIR / f"{FILE_STEM}_train.h5",
-        normalizer,
-        geometry,
-    )
-    valid_raw, valid_data = make_adapter(
-        DATA_DIR / f"{FILE_STEM}_valid.h5",
-        normalizer,
-        geometry,
-    )
-    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    try:
-        valid_shape = adapter_spatial_shape(
-            valid_data,
-            f"{FILE_STEM}_valid.h5",
-        )
-        if valid_shape != training_shape:
-            raise ValueError(
-                f"Validation mesh {valid_shape} differs from the discovered "
-                f"training mesh {training_shape}."
-            )
-        model, history, training_seconds = train_model(
-            best_config,
-            train_data,
-            valid_data,
-            epochs=FINAL_EPOCHS,
-            device=device,
-            print_epochs=True,
-        )
-    finally:
-        train_raw.close()
-        valid_raw.close()
-    print(f"Final FNO training time: {training_seconds:.6f} s")
-
-    checkpoint_path = OUTPUT_DIR / "fno.pt"
-    save_checkpoint(
-        checkpoint_path,
-        model,
+    history, training_seconds = train_best_config(
         best_config,
         normalizer,
         geometry,
         training_shape,
+        device=device,
     )
-    model, saved_normalizer, saved_geometry, saved_training_shape = load_checkpoint(
-        checkpoint_path,
+    evaluation = use_saved_model(
         device,
-    )
-    if saved_training_shape != training_shape:
-        raise RuntimeError(
-            "Reloaded checkpoint training mesh differs from the current "
-            "training dataset."
-        )
-
-    test_raw, test_data = make_adapter(
-        DATA_DIR / f"{FILE_STEM}_test.h5",
-        saved_normalizer,
-        saved_geometry,
-    )
-    try:
-        test_metrics = evaluate(
-            model,
-            test_data,
-            batch_size=EVALUATION_BATCH_SIZE,
-            device=device,
-        )
-    finally:
-        test_raw.close()
-
-    write_history(OUTPUT_DIR / "history.csv", history)
-    plot_history(OUTPUT_DIR / "training_validation_loss.png", history)
-
-    mesh_files = discover_mesh_files(DATA_DIR)
-    reconstruction = make_reconstruction_figures(
-        model,
-        saved_normalizer,
-        saved_geometry,
-        mesh_files,
-        saved_training_shape,
-        device=device,
-    )
-    benchmark = benchmark_meshes(
-        model,
-        saved_normalizer,
-        saved_geometry,
-        mesh_files,
-        saved_training_shape,
-        device=device,
-    )
-    benchmark.to_csv(OUTPUT_DIR / "mesh_benchmark.csv", index=False)
-    print(benchmark.to_string(index=False))
-    plot_mesh_l2(
-        OUTPUT_DIR / "mesh_l2_vs_points.png",
-        benchmark,
-        saved_training_shape,
-    )
-    plot_mesh_wall_time(
-        OUTPUT_DIR / "mesh_wall_time_vs_points.png",
-        benchmark,
-        saved_training_shape,
+        calculate_metrics=True,
         ray_tuning_seconds=tune_seconds,
         final_training_seconds=training_seconds,
     )
 
     metrics = {
-        **test_metrics,
-        "parameters": count_parameters(model),
+        **evaluation,
         "final_training_seconds": training_seconds,
         "ray_tuning_seconds": tune_seconds,
         "best_epoch": int(np.argmin(history["valid_loss"]) + 1),
         "best_validation_loss": float(min(history["valid_loss"])),
-        "training_shape": list(saved_training_shape),
-        "training_mesh_points": math.prod(saved_training_shape),
-        "mesh_benchmark_rows": int(len(benchmark)),
-        "reconstruction": reconstruction,
     }
-    with (OUTPUT_DIR / "metrics.json").open("w", encoding="utf-8") as file:
+    with metrics_path.open("w", encoding="utf-8") as file:
         json.dump(metrics, file, indent=2)
     print(json.dumps(metrics, indent=2))
     print(f"Results written to {OUTPUT_DIR}")
