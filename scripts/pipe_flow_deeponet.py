@@ -26,7 +26,7 @@ from torch.utils.data import DataLoader, TensorDataset
 from physicsnemo.models.mlp.fully_connected import FullyConnected
 from physicsnemo.sym.eq.phy_informer import PhysicsInformer
 
-from chem_operator.datasets import CanteraDataset
+from chem_operator.datasets import ChemOperatorDataset
 from chem_operator.reactors.pipe_flow.dataset_generator import (
     HagenPoiseuille,
     hagen_poiseuille_velocity,
@@ -141,7 +141,7 @@ def project_path(value: str) -> Path:
 
 def load_split(data_dir: Path, split: str, maximum: int | None) -> PipeData:
     torch.set_default_device("cpu")
-    dataset = CanteraDataset(
+    dataset = ChemOperatorDataset(
         data_dir / f"hagen_poiseuille_pipe_flow_{split}.h5",
         task="operator_cartesian",
         coordinate_name="r",

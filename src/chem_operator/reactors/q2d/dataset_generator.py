@@ -113,6 +113,12 @@ def load_input_schema(path: str | Path = INPUT_SCHEMA_PATH) -> list[InputField]:
 INPUT_SCHEMA = load_input_schema()
 INPUT_FIELD_BY_DAT_KEY = {field.dat_key: field for field in INPUT_SCHEMA}
 INPUT_FIELD_BY_PARAM = {field.param_name: field for field in INPUT_SCHEMA}
+MECHANISM_FILE_KEYS = {
+    "GASCTIFILE_LUMEN",
+    "SURFCTIFILE_LUMEN",
+    "GASCTIFILE_SUPPORT",
+    "SURFCTIFILE_SUPPORT",
+}
 
 
 def _parse_scalar(value: str) -> Any:
@@ -259,7 +265,19 @@ def _constant_values(values: Mapping[str, Any]) -> dict[str, Any]:
     return {
         field.case_key: values[field.dat_key]
         for field in INPUT_SCHEMA
-        if field.case_section in constant_sections and field.dat_key in values
+        if (
+            field.case_section in constant_sections
+            and field.dat_key not in MECHANISM_FILE_KEYS
+            and field.dat_key in values
+        )
+    }
+
+
+def _mechanism_file_values(values: Mapping[str, Any]) -> dict[str, Any]:
+    return {
+        field.case_key: values[field.dat_key]
+        for field in INPUT_SCHEMA
+        if field.dat_key in MECHANISM_FILE_KEYS and field.dat_key in values
     }
 
 
@@ -619,6 +637,7 @@ def parse_q2d_grid_csv(
                 group: [species for _, species in items]
                 for group, items in groups.items()
             },
+            "mechanism_files": _mechanism_file_values(input_values),
             "manifest": manifest,
             "input_values": input_values,
         },
@@ -730,6 +749,7 @@ def parse_legacy_solution(
             fraction_group: gas_species,
             "theta": surface_species,
         },
+        "mechanism_files": _mechanism_file_values(values),
         "input_values": values,
     }
     metadata.update(metadata_extra or {})

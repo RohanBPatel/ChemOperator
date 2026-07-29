@@ -1,9 +1,9 @@
 {
-  "normalized_relative_l2": 0.011519121006131172,
-  "normalized_relative_l2_velocity_axial": 0.011156165972352028,
-  "normalized_relative_l2_X_CH4": 0.008698949590325356,
-  "normalized_relative_l2_X_H2": 0.013568262569606304,
-  "parameters": 134739,
+  "normalized_relative_l2": 0.005894423928111792,
+  "normalized_relative_l2_X_CH4": 0.00608590804040432,
+  "normalized_relative_l2_X_H2": 0.006159587763249874,
+  "normalized_relative_l2_theta_C(s)": 0.005245580803602934,
+  "parameters": 95595,
   "training_shape": [
     14,
     6
@@ -24,9 +24,9 @@
       10
     ]
   },
-  "final_training_seconds": 78.4715089599922,
-  "ray_tuning_seconds": 738.638750750004,
-  "best_epoch": 64,
-  "best_validation_loss": 0.011703242237369219,
-  "domain_padding": 0.15
+  "final_training_seconds": 85.08943985099904,
+  "ray_tuning_seconds": 627.2243720550032,
+  "best_epoch": 80,
+  "best_validation_loss": 0.00508738091836373,
+  "domain_padding": 0.0
 }

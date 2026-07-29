@@ -31,7 +31,7 @@ import torch
 from torch.utils.data import DataLoader, Dataset, Subset
 
 from chem_operator.datasets import (
-    CanteraDataset,
+    ChemOperatorDataset,
     DataProcessor,
     FieldPacker,
     NormalizationConfig,
@@ -115,8 +115,8 @@ def search_space(
     }
 
 
-def raw_dataset(split: str) -> CanteraDataset:
-    return CanteraDataset(
+def raw_dataset(split: str) -> ChemOperatorDataset:
+    return ChemOperatorDataset(
         DATA_DIR / f"pfr_chain_of_reactors_{split}.h5",
         task="operator_cartesian",
         coordinate_name="z",

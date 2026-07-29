@@ -13,7 +13,7 @@ import torch
 from torch.utils.data import Dataset, Subset
 
 from chem_operator.datasets import (
-    CanteraDataset,
+    ChemOperatorDataset,
     DataProcessor,
     FieldPacker,
     NormalizationConfig,
@@ -61,8 +61,8 @@ PLOT_CASES = 2
 MAX_TRAJECTORIES: int | None = None
 
 
-def raw_dataset(data_dir: Path, split: str, stride: int) -> CanteraDataset:
-    return CanteraDataset(
+def raw_dataset(data_dir: Path, split: str, stride: int) -> ChemOperatorDataset:
+    return ChemOperatorDataset(
         data_dir / f"packed_bed_1d_{split}.h5",
         task="operator_cartesian",
         coordinate_name="z",

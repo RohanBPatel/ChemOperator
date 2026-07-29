@@ -2,7 +2,7 @@
 
 The module lives beside the PFR examples for now, but none of the classes are
 PFR-specific.  They operate on the structured samples returned by
-``CanteraDataset`` and deliberately contain no HDF5 I/O.
+``ChemOperatorDataset`` and deliberately contain no HDF5 I/O.
 """
 
 from __future__ import annotations
@@ -306,7 +306,7 @@ class FieldPacker:
 
 
 class DataProcessor:
-    """Transform one raw ``CanteraDataset`` sample into model tensors."""
+    """Transform one raw ``ChemOperatorDataset`` sample into model tensors."""
 
     def __init__(
         self,

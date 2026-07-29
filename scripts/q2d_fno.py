@@ -24,7 +24,6 @@ import math
 import os
 from pathlib import Path
 import re
-import statistics
 import time
 from typing import Any
 
@@ -33,6 +32,8 @@ os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
 os.environ.setdefault("RAY_memory_monitor_refresh_ms", "0")
 
 import matplotlib.pyplot as plt
+from matplotlib.colors import LogNorm
+from matplotlib.ticker import LogFormatterMathtext, LogLocator, NullFormatter
 from neuralop.losses import LpLoss
 from neuralop.models import FNO
 import numpy as np
@@ -47,7 +48,7 @@ from torch import nn
 from torch.nn import functional as torch_functional
 from torch.utils.data import DataLoader
 
-from chem_operator.datasets import CanteraDataset
+from chem_operator.datasets import ChemOperatorDataset
 from chem_operator.models import (
     FNOAdapter,
     FNOChannel,
@@ -55,6 +56,25 @@ from chem_operator.models import (
 )
 from chem_operator.normalization import ZScoreNormalizer
 
+
+SLIDE_DPI = 220
+plt.rcParams.update(
+    {
+        "font.size": 20,
+        "axes.titlesize": 26,
+        "axes.labelsize": 20,
+        "xtick.labelsize": 17,
+        "ytick.labelsize": 17,
+        "legend.fontsize": 20,
+        "figure.titlesize": 24,
+        "lines.linewidth": 2.6,
+        "lines.markersize": 8,
+        "axes.linewidth": 1.2,
+        "grid.linewidth": 0.9,
+        "savefig.bbox": "tight",
+        "savefig.facecolor": "white"
+    }
+)
 
 ROOT = Path(__file__).resolve().parents[1]
 DATA_DIR = ROOT / "datasets" / "q2d_cmr"
@@ -67,11 +87,11 @@ METRIC = "best_valid_loss"
 
 # Run-mode flags. Leave both false for tuning, training, and evaluation.
 TRAIN_BEST_CONFIG_ONLY = False
-PLOT_SAVED_MODEL_ONLY = False
+PLOT_SAVED_MODEL_ONLY = True
 
 TUNE_SAMPLES = 25
 TUNE_EPOCHS = 30
-FINAL_EPOCHS = 75
+FINAL_EPOCHS = 100
 EVALUATION_BATCH_SIZE = 2
 
 CPUS_PER_TRIAL = 2
@@ -81,6 +101,8 @@ MAX_CONCURRENT_TRIALS = 1
 LATENCY_WARMUPS = 5
 LATENCY_REPEATS = 20
 RELATIVE_L2_EPS = 1.0e-8
+AMORTIZED_EVALUATION_COUNTS = (1, 10, 100, 1000)
+REPRESENTATIVE_RESOLUTION_COUNT = 4
 
 MESH_FILE_PATTERN = re.compile(r"q2d_cmr_(\d+)_(\d+)_test\.h5")
 
@@ -102,13 +124,13 @@ INPUT_CHANNELS = (
 )
 
 OUTPUT_CHANNELS = (
-    FNOChannel(
-        "velocity_axial",
-        "field",
-        "velocity_axial",
-        display_name="Axial velocity",
-        unit="m/s",
-    ),
+    # FNOChannel(
+    #     "velocity_axial",
+    #     "field",
+    #     "velocity_axial",
+    #     display_name="Axial velocity",
+    #     unit="m/s",
+    # ),
     FNOChannel(
         "X_CH4",
         "species",
@@ -125,14 +147,14 @@ OUTPUT_CHANNELS = (
         display_name="Hydrogen",
         unit="-",
     ),
-    # FNOChannel(
-    #     "theta_C(s)",
-    #     "species",
-    #     "theta",
-    #     species="C(s)",
-    #     display_name="Carbon Accumulation",
-    #     unit="-",
-    # ),
+    FNOChannel(
+        "theta_C(s)",
+        "species",
+        "theta",
+        species="C(s)",
+        display_name="Carbon Accumulation",
+        unit="-",
+    ),
 )
 
 
@@ -149,7 +171,7 @@ class MeshFile:
         return self.n_z * self.n_r
 
 
-def raw_dataset(path: Path) -> CanteraDataset:
+def raw_dataset(path: Path) -> ChemOperatorDataset:
     """Open one complete steady Q2D field per HDF5 case."""
     field_names = FNOAdapter.required_field_names(
         INPUT_CHANNELS,
@@ -157,7 +179,7 @@ def raw_dataset(path: Path) -> CanteraDataset:
     )
     if not field_names:
         raise ValueError("At least one configured channel must read an HDF5 field.")
-    return CanteraDataset(
+    return ChemOperatorDataset(
         path,
         task="field_map",
         coordinate_name="z",
@@ -289,7 +311,7 @@ def make_adapter(
     path: Path,
     normalizer: ZScoreNormalizer,
     geometry: tuple[float, float],
-) -> tuple[CanteraDataset, FNOAdapter]:
+) -> tuple[ChemOperatorDataset, FNOAdapter]:
     """Open a raw dataset and its normalized Q2D adapter."""
     raw = raw_dataset(path)
     current_geometry = _case_geometry(raw[0]["metadata"])
@@ -520,7 +542,7 @@ def tune_hyperparameters(
             "learning_rate": tune.loguniform(1.0e-4, 4.0e-3),
             "weight_decay": tune.loguniform(1.0e-8, 1.0e-4),
             "batch_size": 2, #tune.choice([2, 4]),
-            "domain_padding": tune.choice([0.0, 0.05, 0.1, 0.15, 0.2]),
+            "domain_padding": tune.choice([0.0, 0.05, 0.1, 0.15]),
         },
         tune_config=tune.TuneConfig(
             search_alg=search,
@@ -727,15 +749,15 @@ def plot_history(
 ) -> None:
     """Plot normalized relative-L2 histories."""
     epochs = range(1, len(history["train_loss"]) + 1)
-    figure, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
+    figure, axis = plt.subplots(figsize=(10, 6), constrained_layout=True)
     axis.semilogy(epochs, history["train_loss"], label="Training")
     axis.semilogy(epochs, history["valid_loss"], label="Validation")
     axis.set_xlabel("Epoch")
     axis.set_ylabel("Normalized relative L2")
-    axis.set_title("catalytic membrane reactor FNO")
+    axis.set_title("FNO training and validation loss")
     axis.grid(alpha=0.25)
     axis.legend()
-    figure.savefig(path, dpi=180)
+    figure.savefig(path, dpi=SLIDE_DPI)
     plt.close(figure)
 
 
@@ -757,7 +779,7 @@ def plot_field_comparison(  # pylint: disable=too-many-arguments
     figure, axes = plt.subplots(
         len(OUTPUT_CHANNELS),
         3,
-        figsize=(13, 10),
+        figsize=(16, 12),
         squeeze=False,
         constrained_layout=True,
     )
@@ -789,20 +811,28 @@ def plot_field_comparison(  # pylint: disable=too-many-arguments
                 cmap="magma",
             ),
         )
-        axes[row, 0].set_ylabel(f"{spec.title}\nRadius [mm]")
+        axes[row, 0].set_ylabel(
+            r"$\bf{" + spec.title + "}$\nRadius [mm]",
+            fontsize=22
+        )
         colorbar_label = spec.unit if spec.unit != "-" else "Mole fraction [-]"
         for column, column_title in enumerate(
-            ("Solver truth", "FNO", "Absolute error")
+            ("Numerical Solver", "FNO", "Absolute error")
         ):
-            axes[row, column].set_title(column_title)
-            axes[row, column].set_xlabel("Axial position [mm]")
-            figure.colorbar(
-                images[column],
-                ax=axes[row, column],
-                label=colorbar_label,
-            )
+            axes[0, column].set_title(column_title)
+            if row == len(OUTPUT_CHANNELS) - 1:
+                axes[row, column].set_xlabel("Axial position [mm]")
+
+        # The solver and FNO use the same limits and share the colorbar beside
+        # the FNO column. The absolute-error colorbar remains independent.
+        figure.colorbar(images[1], ax=axes[row, 1])
+        figure.colorbar(
+            images[2],
+            ax=axes[row, 2],
+            label=colorbar_label,
+        )
     figure.suptitle(title)
-    figure.savefig(path, dpi=180)
+    figure.savefig(path, dpi=SLIDE_DPI)
     plt.close(figure)
 
 
@@ -957,7 +987,7 @@ def make_reconstruction_figures(  # pylint: disable=too-many-locals
             base["r"],
             title=(
                 "Test reconstruction: "
-                f"{training_shape[0]}x{training_shape[1]}, "
+                f"{training_shape[0]}×{training_shape[1]}, "
                 f"$T_0$={t0:.2f} K, $Q_s$={sccm:.2f} sccm"
             ),
         )
@@ -969,8 +999,8 @@ def make_reconstruction_figures(  # pylint: disable=too-many-locals
             fine["r"],
             title=(
                 "2D CMR FNO superresolution: "
-                f"{training_shape[0]}x{training_shape[1]} to "
-                f"{fine_file.n_z}x{fine_file.n_r}"
+                f"{training_shape[0]}×{training_shape[1]} to "
+                f"{fine_file.n_z}×{fine_file.n_r}"
             ),
         )
     finally:
@@ -991,27 +1021,68 @@ def _synchronize(device: torch.device) -> None:
         torch.cuda.synchronize(device)
 
 
+def _complete_fno_evaluation(
+    model: FNO,
+    physical_input: torch.Tensor,
+    dataset: FNOAdapter,
+    training_shape: tuple[int, int],
+    output_shape: tuple[int, int],
+    *,
+    device: torch.device,
+) -> torch.Tensor:
+    """Run preprocessing, resampling, inference, and postprocessing once."""
+    normalized_input = torch.stack(
+        [
+            dataset.normalizer.normalize(
+                physical_input[index],
+                channel.label,
+            )
+            for index, channel in enumerate(dataset.input_channels)
+        ]
+    )
+    training_input = resize_model_input(normalized_input, training_shape)
+    evaluation_input = resize_model_input(training_input, output_shape)
+    normalized_output = model(evaluation_input.unsqueeze(0).to(device)).cpu()[0]
+    return dataset.denormalize_output(normalized_output)
+
+
 def inference_latency(
     model: FNO,
-    model_input: torch.Tensor,
+    physical_input: torch.Tensor,
+    dataset: FNOAdapter,
+    training_shape: tuple[int, int],
+    output_shape: tuple[int, int],
     *,
     device: torch.device,
 ) -> float:
-    """Return median synchronized single-case FNO latency in seconds."""
-    model_input = model_input.unsqueeze(0).to(device)
+    """Return median end-to-end single-case FNO evaluation time."""
     model.eval()
     with torch.no_grad():
         for _ in range(LATENCY_WARMUPS):
-            model(model_input)
+            _complete_fno_evaluation(
+                model,
+                physical_input,
+                dataset,
+                training_shape,
+                output_shape,
+                device=device,
+            )
         _synchronize(device)
         durations = []
         for _ in range(LATENCY_REPEATS):
             _synchronize(device)
             tic = time.perf_counter()
-            model(model_input)
+            _complete_fno_evaluation(
+                model,
+                physical_input,
+                dataset,
+                training_shape,
+                output_shape,
+                device=device,
+            )
             _synchronize(device)
             durations.append(time.perf_counter() - tic)
-    return statistics.median(durations)
+    return float(np.median(durations))
 
 
 def benchmark_meshes(  # pylint: disable=too-many-locals
@@ -1064,7 +1135,10 @@ def benchmark_meshes(  # pylint: disable=too-many-locals
                     "solver_wall_time_s": float(metadata["wall_time"]),
                     "fno_wall_time_s": inference_latency(
                         model,
-                        prediction_input,
+                        physical["x"],
+                        dataset,
+                        training_shape,
+                        target_shape,
                         device=device,
                     ),
                 }
@@ -1097,20 +1171,490 @@ def _grouped_summary(
     )
 
 
-def _mark_training_mesh(
+def dataset_generation_costs() -> dict[str, float | int]:
+    """Return numerical-simulation costs for training and validation data."""
+    result: dict[str, float | int] = {}
+    total_seconds = 0.0
+    total_cases = 0
+    for split in ("train", "valid"):
+        dataset = raw_dataset(DATA_DIR / f"{FILE_STEM}_{split}.h5")
+        try:
+            wall_times = [
+                float(dataset[index]["metadata"]["wall_time"])
+                for index in range(len(dataset))
+            ]
+        finally:
+            dataset.close()
+        if not wall_times or any(
+            not math.isfinite(value) or value < 0.0 for value in wall_times
+        ):
+            raise ValueError(
+                f"{split} data contain missing or invalid solver wall times."
+            )
+        split_seconds = sum(wall_times)
+        result[f"{split}_data_generation_seconds"] = split_seconds
+        result[f"{split}_data_cases"] = len(wall_times)
+        total_seconds += split_seconds
+        total_cases += len(wall_times)
+    result["data_generation_seconds"] = total_seconds
+    result["data_generation_cases"] = total_cases
+    return result
+
+
+def _resolution_cost_records(frame: pd.DataFrame) -> list[dict[str, Any]]:
+    """Aggregate benchmark costs for each exact axial-radial resolution."""
+    summary = (
+        frame.groupby(["n_z", "n_r"], as_index=False, sort=True)
+        .agg(
+            mesh_points=("mesh_points", "first"),
+            benchmark_cases=("case_index", "size"),
+            numerical_solver_seconds=("solver_wall_time_s", "mean"),
+            fno_evaluation_seconds=("fno_wall_time_s", "mean"),
+            normalized_relative_l2=("normalized_relative_l2", "mean"),
+        )
+        .sort_values(["mesh_points", "n_z", "n_r"], ignore_index=True)
+    )
+    records: list[dict[str, Any]] = []
+    for row in summary.itertuples(index=False):
+        records.append(
+            {
+                "n_z": int(row.n_z),
+                "n_r": int(row.n_r),
+                "mesh_points": int(row.mesh_points),
+                "benchmark_cases": int(row.benchmark_cases),
+                "numerical_solver_seconds": float(
+                    row.numerical_solver_seconds
+                ),
+                "fno_evaluation_seconds": float(row.fno_evaluation_seconds),
+                "normalized_relative_l2": float(row.normalized_relative_l2),
+            }
+        )
+    return records
+
+
+def _representative_resolutions(
+    records: Sequence[Mapping[str, Any]],
+    training_shape: tuple[int, int],
+) -> list[Mapping[str, Any]]:
+    """Select dataset-derived resolutions spanning the benchmark range."""
+    if len(records) <= REPRESENTATIVE_RESOLUTION_COUNT:
+        selected = list(records)
+    else:
+        indices = np.linspace(
+            0,
+            len(records) - 1,
+            REPRESENTATIVE_RESOLUTION_COUNT,
+        ).round().astype(int)
+        selected = [records[index] for index in dict.fromkeys(indices)]
+    training_record = next(
+        (
+            record
+            for record in records
+            if (record["n_z"], record["n_r"]) == training_shape
+        ),
+        None,
+    )
+    if training_record is not None and training_record not in selected:
+        if len(selected) < 3:
+            selected.append(training_record)
+        else:
+            replacement = min(
+                range(1, len(selected) - 1),
+                key=lambda index: abs(
+                    selected[index]["mesh_points"]
+                    - training_record["mesh_points"]
+                ),
+            )
+            selected[replacement] = training_record
+    return sorted(
+        selected,
+        key=lambda record: (
+            record["mesh_points"],
+            record["n_z"],
+            record["n_r"],
+        ),
+    )
+
+
+def build_cost_model(
+    frame: pd.DataFrame,
+    training_shape: tuple[int, int],
+    *,
+    ray_tuning_seconds: float,
+    final_training_seconds: float,
+) -> dict[str, Any]:
+    """Build the persisted offline, online, and break-even cost model."""
+    data_costs = dataset_generation_costs()
+    offline_seconds = (
+        float(data_costs["data_generation_seconds"])
+        + ray_tuning_seconds
+        + final_training_seconds
+    )
+    records = _resolution_cost_records(frame)
+    for record in records:
+        difference = (
+            record["numerical_solver_seconds"]
+            - record["fno_evaluation_seconds"]
+        )
+        record["break_even_evaluations"] = (
+            offline_seconds / difference if difference > 0.0 else None
+        )
+        record["asymptotic_speedup"] = (
+            record["numerical_solver_seconds"]
+            / record["fno_evaluation_seconds"]
+        )
+    representatives = _representative_resolutions(records, training_shape)
+    return {
+        "definitions": {
+            "fno_total": (
+                "T_data + T_tune + T_final_train + "
+                "N * t_FNO(resolution)"
+            ),
+            "numerical_total": "N * t_num(resolution)",
+            "fno_amortized": (
+                "T_offline / N + t_FNO(resolution)"
+            ),
+            "speedup": "T_num(N, resolution) / T_FNO(N, resolution)",
+            "data_generation_source": (
+                "sum of per-case solver wall_time metadata for the complete "
+                "training and validation datasets"
+            ),
+            "ray_tuning_scope": (
+                "elapsed wall time around all Ray Tune trials, including "
+                "pruned or unsuccessful trials"
+            ),
+            "resolution_aggregation": (
+                "mean per-case wall time for each exact (n_z, n_r) mesh"
+            ),
+            "fno_evaluation_includes": [
+                "input normalization",
+                "interpolation or resampling",
+                "device transfer",
+                "model inference",
+                "output denormalization",
+            ],
+        },
+        **data_costs,
+        "ray_tuning_seconds": float(ray_tuning_seconds),
+        "final_training_seconds": float(final_training_seconds),
+        "offline_seconds": float(offline_seconds),
+        "amortized_evaluation_counts": list(AMORTIZED_EVALUATION_COUNTS),
+        "representative_resolutions": [
+            {
+                "n_z": int(record["n_z"]),
+                "n_r": int(record["n_r"]),
+                "mesh_points": int(record["mesh_points"]),
+            }
+            for record in representatives
+        ],
+        "resolutions": records,
+    }
+
+
+def plot_cumulative_break_even(
+    path: Path,
+    cost_model: Mapping[str, Any],
+) -> None:
+    """Plot cumulative numerical and FNO costs with break-even markers."""
+    representative_keys = {
+        (item["n_z"], item["n_r"])
+        for item in cost_model["representative_resolutions"]
+    }
+    representatives = [
+        record
+        for record in cost_model["resolutions"]
+        if (record["n_z"], record["n_r"]) in representative_keys
+    ]
+    finite_break_evens = [
+        float(record["break_even_evaluations"])
+        for record in representatives
+        if record["break_even_evaluations"] is not None
+    ]
+    maximum_cases = max(
+        AMORTIZED_EVALUATION_COUNTS[-1],
+        1.1 * max(finite_break_evens, default=0.0),
+    )
+    requested_cases = np.linspace(0.0, maximum_cases, 500)
+    figure, axes = plt.subplots(
+        2,
+        2,
+        figsize=(16, 9),
+        squeeze=False,
+        constrained_layout=True,
+    )
+    offline_seconds = float(cost_model["offline_seconds"])
+    for axis, record in zip(axes.flat, representatives):
+        numerical = requested_cases * record["numerical_solver_seconds"]
+        fno = (
+            offline_seconds
+            + requested_cases * record["fno_evaluation_seconds"]
+        )
+        axis.plot(requested_cases, numerical, label="Numerical solver")
+        axis.plot(requested_cases, fno, linestyle="--", label="FNO")
+        break_even = record["break_even_evaluations"]
+        if break_even is not None:
+            intersection_time = (
+                break_even * record["numerical_solver_seconds"]
+            )
+            axis.scatter(
+                [break_even],
+                [intersection_time],
+                color="black",
+                marker="X",
+                s=90,
+                zorder=4,
+                label=f"Break-even: N={break_even:.1f}",
+            )
+        axis.set_title(
+            f"{record['n_z']}×{record['n_r']} "
+            f"({record['mesh_points']} points)"
+        )
+        axis.set_xlabel("Number of new cases, N")
+        axis.set_ylabel("Cumulative wall time [s]")
+        axis.grid(alpha=0.28)
+        axis.legend()
+    for axis in axes.flat[len(representatives):]:
+        axis.set_visible(False)
+    figure.suptitle(
+        "Cumulative cost and FNO break-even "
+        f"(offline cost = {offline_seconds:.1f} s)"
+    )
+    figure.savefig(path, dpi=SLIDE_DPI)
+    plt.close(figure)
+
+
+def _pareto_indices(
+    times: np.ndarray,
+    mesh_points: np.ndarray,
+) -> np.ndarray:
+    """Return indices not dominated in lower-time/higher-resolution space."""
+    keep = []
+    for index, (wall_time, resolution) in enumerate(
+        zip(times, mesh_points)
+    ):
+        dominated = np.any(
+            (times <= wall_time)
+            & (mesh_points >= resolution)
+            & ((times < wall_time) | (mesh_points > resolution))
+        )
+        if not dominated:
+            keep.append(index)
+    return np.asarray(
+        sorted(keep, key=lambda item: times[item]),
+        dtype=int,
+    )
+
+
+def plot_amortized_pareto(
+    path: Path,
+    cost_model: Mapping[str, Any],
+) -> None:
+    """Plot amortized cost-resolution Pareto frontiers."""
+    records = cost_model["resolutions"]
+    mesh_points = np.asarray(
+        [record["mesh_points"] for record in records],
+        dtype=float,
+    )
+    numerical = np.asarray(
+        [record["numerical_solver_seconds"] for record in records],
+        dtype=float,
+    )
+    fno_online = np.asarray(
+        [record["fno_evaluation_seconds"] for record in records],
+        dtype=float,
+    )
+    offline_seconds = float(cost_model["offline_seconds"])
+    figure, axes = plt.subplots(
+        1,
+        len(AMORTIZED_EVALUATION_COUNTS),
+        figsize=(21, 6),
+        sharey=True,
+        constrained_layout=True,
+    )
+    numerical_frontier = _pareto_indices(numerical, mesh_points)
+    for axis, evaluations in zip(axes, AMORTIZED_EVALUATION_COUNTS):
+        fno_amortized = offline_seconds / evaluations + fno_online
+        fno_frontier = _pareto_indices(fno_amortized, mesh_points)
+        axis.scatter(numerical, mesh_points, color="tab:blue", alpha=0.25)
+        axis.scatter(fno_amortized, mesh_points, color="tab:orange", alpha=0.25)
+        axis.plot(
+            numerical[numerical_frontier],
+            mesh_points[numerical_frontier],
+            color="tab:blue",
+            marker="o",
+            label="Numerical frontier",
+        )
+        axis.plot(
+            fno_amortized[fno_frontier],
+            mesh_points[fno_frontier],
+            color="tab:orange",
+            marker="o",
+            label="FNO frontier",
+        )
+        axis.set_xscale("log")
+        axis.xaxis.set_major_locator(LogLocator(base=10.0))
+        axis.xaxis.set_major_formatter(LogFormatterMathtext(base=10.0))
+        axis.xaxis.set_minor_formatter(NullFormatter())
+        axis.set_title(f"N = {evaluations}")
+        axis.set_xlabel("Amortized wall time per case [s]")
+        axis.grid(alpha=0.25)
+    axes[0].set_ylabel("Requested resolution [mesh points]")
+    axes[-1].legend()
+    figure.suptitle("Amortized cost-resolution Pareto frontiers")
+    figure.savefig(path, dpi=SLIDE_DPI)
+    plt.close(figure)
+
+
+def plot_break_even_map(
+    path: Path,
+    cost_model: Mapping[str, Any],
+) -> None:
+    """Plot speedup across exact resolutions and evaluation counts."""
+    records = cost_model["resolutions"]
+    numerical = np.asarray(
+        [record["numerical_solver_seconds"] for record in records],
+        dtype=float,
+    )
+    fno_online = np.asarray(
+        [record["fno_evaluation_seconds"] for record in records],
+        dtype=float,
+    )
+    finite_break_evens = [
+        float(record["break_even_evaluations"])
+        for record in records
+        if record["break_even_evaluations"] is not None
+    ]
+    maximum_cases = max(
+        AMORTIZED_EVALUATION_COUNTS[-1],
+        2.0 * max(finite_break_evens, default=0.0),
+    )
+    evaluation_counts = np.geomspace(1.0, maximum_cases, 240)
+    offline_seconds = float(cost_model["offline_seconds"])
+    speedup = (
+        evaluation_counts[:, None] * numerical[None, :]
+        / (
+            offline_seconds
+            + evaluation_counts[:, None] * fno_online[None, :]
+        )
+    )
+    resolution_index = np.arange(len(records))
+    positive_minimum = max(float(speedup.min()), np.finfo(float).tiny)
+    maximum = float(speedup.max())
+    figure, axis = plt.subplots(figsize=(16, 9), constrained_layout=True)
+    axis.set_yscale("log")
+    image = axis.pcolormesh(
+        resolution_index,
+        evaluation_counts,
+        speedup,
+        shading="nearest",
+        cmap="coolwarm",
+        norm=LogNorm(vmin=positive_minimum, vmax=maximum),
+    )
+    if positive_minimum <= 1.0 <= maximum:
+        contour = axis.contour(
+            resolution_index,
+            evaluation_counts,
+            speedup,
+            levels=[1.0],
+            colors="black",
+            linewidths=2,
+        )
+        label_candidates = [
+            (float(index), float(record["break_even_evaluations"]))
+            for index, record in enumerate(records)
+            if record["break_even_evaluations"] is not None
+        ]
+        label_location = label_candidates[len(label_candidates) // 3]
+        axis.clabel(
+            contour,
+            fmt={1.0: "break-even"},
+            inline=True,
+            inline_spacing=8,
+            manual=[label_location],
+        )
+    tick_step = max(1, math.ceil(len(records) / 12))
+    ticks = resolution_index[::tick_step]
+    axis.set_xticks(ticks)
+    axis.set_xticklabels(
+        [
+            f"{records[index]['n_z']}×{records[index]['n_r']}"
+            for index in ticks
+        ],
+        rotation=45,
+        ha="right",
+    )
+    axis.set_xlabel("Requested axial × radial resolution")
+    axis.set_ylabel("Number of new evaluations, N")
+    axis.set_title("FNO-to-numerical cumulative-cost speedup")
+    figure.colorbar(image, ax=axis, label="Speedup")
+    figure.savefig(path, dpi=SLIDE_DPI)
+    plt.close(figure)
+
+
+def _resolution_plot_summary(
+    frame: pd.DataFrame,
+    column: str,
+) -> pd.DataFrame:
+    """Aggregate one benchmark quantity by exact axial-radial resolution."""
+    return (
+        frame.groupby(["n_z", "n_r"], as_index=False, sort=True)
+        .agg(
+            mesh_points=("mesh_points", "first"),
+            mean=(column, "mean"),
+            minimum=(column, "min"),
+            maximum=(column, "max"),
+        )
+        .sort_values(["mesh_points", "n_z", "n_r"], ignore_index=True)
+    )
+
+
+def _set_resolution_ticks(
     axis: plt.Axes,
+    summary: pd.DataFrame,
+    *,
+    maximum_ticks: int = 14,
+) -> None:
+    """Label an ordered categorical axial-by-radial resolution axis."""
+    step = max(1, math.ceil(len(summary) / maximum_ticks))
+    ticks = np.arange(0, len(summary), step)
+    if ticks[-1] != len(summary) - 1:
+        ticks = np.append(ticks, len(summary) - 1)
+    axis.set_xticks(ticks)
+    axis.set_xticklabels(
+        [
+            f"{int(summary.iloc[index]['n_z'])}×"
+            f"{int(summary.iloc[index]['n_r'])}"
+            for index in ticks
+        ],
+        rotation=42,
+        ha="right",
+    )
+    axis.set_xlim(-0.6, len(summary) - 0.4)
+    axis.set_xlabel("Axial × radial resolution")
+
+
+def _mark_training_resolution(
+    axis: plt.Axes,
+    summary: pd.DataFrame,
     training_shape: tuple[int, int],
 ) -> None:
-    """Mark the mesh size used to train the FNO on a benchmark axis."""
-    training_points = math.prod(training_shape)
+    """Mark the categorical resolution used to train the FNO."""
+    matches = summary.index[
+        (summary["n_z"] == training_shape[0])
+        & (summary["n_r"] == training_shape[1])
+    ].tolist()
+    if not matches:
+        raise ValueError(
+            "The training resolution is absent from the mesh benchmark."
+        )
     axis.axvline(
-        training_points,
+        matches[0],
         color="black",
         linestyle="--",
-        linewidth=1.5,
+        linewidth=2.0,
         label=(
-            "FNO training mesh "
-            f"({training_shape[0]}x{training_shape[1]} = {training_points})"
+            "FNO training resolution "
+            f"({training_shape[0]}×{training_shape[1]})"
         ),
     )
 
@@ -1120,21 +1664,29 @@ def plot_mesh_l2(
     frame: pd.DataFrame,
     training_shape: tuple[int, int],
 ) -> None:
-    """Plot normalized relative L2 against total mesh points."""
-    x, mean, minimum, maximum = _grouped_summary(
+    """Plot normalized relative L2 against exact requested resolution."""
+    summary = _resolution_plot_summary(
         frame,
         "normalized_relative_l2",
     )
-    figure, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
-    axis.plot(x, mean, marker="o", label="FNO")
-    axis.fill_between(x, minimum, maximum, alpha=0.2, label="Min-max")
-    axis.set_xlabel("Number of mesh points")
+    x = np.arange(len(summary))
+    figure, axis = plt.subplots(figsize=(15, 7), constrained_layout=True)
+    axis.plot(x, summary["mean"], marker="o", label="FNO mean")
+    axis.fill_between(
+        x,
+        summary["minimum"],
+        summary["maximum"],
+        alpha=0.22,
+        label="Case min–max",
+    )
     axis.set_ylabel("Normalized relative L2")
     axis.set_yscale("log")
-    _mark_training_mesh(axis, training_shape)
-    axis.grid(alpha=0.25)
-    axis.legend()
-    figure.savefig(path, dpi=180)
+    axis.set_title("FNO error across requested mesh resolutions")
+    _set_resolution_ticks(axis, summary)
+    _mark_training_resolution(axis, summary, training_shape)
+    axis.grid(alpha=0.28)
+    axis.legend(ncols=3, loc="upper left")
+    figure.savefig(path, dpi=SLIDE_DPI)
     plt.close(figure)
 
 
@@ -1142,49 +1694,111 @@ def plot_mesh_wall_time(
     path: Path,
     frame: pd.DataFrame,
     training_shape: tuple[int, int],
-    *,
-    ray_tuning_seconds: float,
-    final_training_seconds: float,
+    cost_model: Mapping[str, Any],
 ) -> None:
-    """Plot inference, solver, tuning, and final-training wall times."""
-    figure, axis = plt.subplots(figsize=(7, 4.5), constrained_layout=True)
-    for column, label in (
-        ("solver_wall_time_s", "1 evaluation of numerical solver"),
-        ("fno_wall_time_s", "1 evaluation of FNO"),
+    """Plot online times and grouped offline-cost bars on a shared axis."""
+    solver = _resolution_plot_summary(frame, "solver_wall_time_s")
+    fno = _resolution_plot_summary(frame, "fno_wall_time_s")
+    if not solver[["n_z", "n_r"]].equals(fno[["n_z", "n_r"]]):
+        raise ValueError("Solver and FNO resolution summaries do not align.")
+    x = np.arange(len(solver))
+    figure, (axis, offline_axis) = plt.subplots(
+        1,
+        2,
+        figsize=(19, 7.5),
+        gridspec_kw={"width_ratios": (3.2, 2.3)},
+        sharey=True,
+        constrained_layout=True,
+    )
+    for summary, label, color in (
+        (solver, "Numerical solver per case", "tab:blue"),
+        (fno, "FNO per case", "tab:orange"),
     ):
-        x, mean, minimum, maximum = _grouped_summary(frame, column)
-        axis.plot(x, mean, marker="o", label=label)
-        axis.fill_between(x, minimum, maximum, alpha=0.15)
-    for seconds, label, color, linestyle in (
+        axis.plot(x, summary["mean"], marker="o", color=color, label=label)
+        axis.fill_between(
+            x,
+            summary["minimum"],
+            summary["maximum"],
+            color=color,
+            alpha=0.18,
+        )
+    ray_tuning_seconds = float(cost_model["ray_tuning_seconds"])
+    final_training_seconds = float(cost_model["final_training_seconds"])
+    axis.set_ylabel("Wall time [s]")
+    positive_minimum = float(fno["minimum"].min())
+    axis.set_yscale("symlog", linthresh=max(positive_minimum / 2.0, 1.0e-6))
+    axis.set_title("Online evaluation cost by resolution")
+    _set_resolution_ticks(axis, solver)
+    _mark_training_resolution(axis, solver, training_shape)
+    axis.grid(alpha=0.28)
+    axis.legend()
+    # axis.legend(ncols=2, loc="upper left")
+
+    components = (
+        (
+            float(cost_model["data_generation_seconds"]),
+            r"Data Generation",
+            "tab:blue",
+        ),
         (
             ray_tuning_seconds,
-            "Finding the best FNO model",
+            r"Tuning Model",
             "tab:purple",
-            "-.",
         ),
         (
             final_training_seconds,
-            "FNO training",
+            r"Final training",
             "tab:green",
-            ":",
         ),
-    ):
+    )
+    for seconds, label, _ in components:
         if not math.isfinite(seconds) or seconds <= 0.0:
             raise ValueError(f"{label} wall time must be positive and finite.")
-        axis.axhline(
-            seconds,
-            color=color,
-            linestyle=linestyle,
-            linewidth=1.8,
-            label=f"{label} ({seconds:.2f} s)",
+
+    bar_positions = np.array((-0.34, 0.0, 0.34))
+    bars = offline_axis.bar(
+        bar_positions,
+        [component[0] for component in components],
+        color=[component[2] for component in components],
+        width=0.28,
+        edgecolor="white",
+        linewidth=1.5,
+    )
+    for bar, (seconds, label, _) in zip(bars, components):
+        offline_axis.annotate(
+            f"{seconds:.1f} s",
+            xy=(bar.get_x() + bar.get_width() / 2.0, bar.get_height()),
+            xytext=(0, 2),
+            textcoords="offset points",
+            ha="center",
+            va="bottom",
+            fontsize=16,
         )
-    axis.set_xlabel("Number of mesh points")
-    axis.set_ylabel("Wall time [s]")
-    axis.set_yscale("log")
-    _mark_training_mesh(axis, training_shape)
-    axis.grid(alpha=0.25)
-    axis.legend()
-    figure.savefig(path, dpi=180)
+    total_offline_seconds = sum(component[0] for component in components)
+    offline_axis.text(
+        0.5,
+        0.05,
+        rf"Total offline time = {total_offline_seconds:.1f} s",
+        transform=offline_axis.transAxes,
+        ha="center",
+        va="bottom",
+        fontsize=20,
+        bbox={
+            "boxstyle": "round,pad=0.5",
+            "facecolor": "white",
+            "edgecolor": "0.35",
+            "alpha": 0.94,
+        },
+    )
+    offline_axis.set_xlim(-0.65, 0.65)
+    offline_axis.set_xticks(
+        bar_positions,
+        [component[1] for component in components],
+    )
+    offline_axis.set_title("One-time offline cost components")
+    offline_axis.grid(axis="y", alpha=0.28)
+    offline_axis.tick_params(axis="y", labelleft=False)
+    figure.savefig(path, dpi=SLIDE_DPI)
     plt.close(figure)
 
 
@@ -1354,6 +1968,12 @@ def use_saved_model(  # pylint: disable=too-many-locals
         benchmark = pd.read_csv(benchmark_path)
     if calculate_metrics:
         print(benchmark.to_string(index=False))
+    cost_model = build_cost_model(
+        benchmark,
+        training_shape,
+        ray_tuning_seconds=ray_tuning_seconds,
+        final_training_seconds=final_training_seconds,
+    )
     plot_mesh_l2(
         OUTPUT_DIR / "mesh_l2_vs_points.png",
         benchmark,
@@ -1363,8 +1983,19 @@ def use_saved_model(  # pylint: disable=too-many-locals
         OUTPUT_DIR / "mesh_wall_time_vs_points.png",
         benchmark,
         training_shape,
-        ray_tuning_seconds=ray_tuning_seconds,
-        final_training_seconds=final_training_seconds,
+        cost_model,
+    )
+    plot_cumulative_break_even(
+        OUTPUT_DIR / "cumulative_break_even.png",
+        cost_model,
+    )
+    plot_amortized_pareto(
+        OUTPUT_DIR / "amortized_pareto_frontiers.png",
+        cost_model,
+    )
+    plot_break_even_map(
+        OUTPUT_DIR / "break_even_speedup_map.png",
+        cost_model,
     )
     return {
         **test_metrics,
@@ -1373,6 +2004,7 @@ def use_saved_model(  # pylint: disable=too-many-locals
         "training_mesh_points": math.prod(training_shape),
         "mesh_benchmark_rows": int(len(benchmark)),
         "reconstruction": reconstruction,
+        "cost_model": cost_model,
     }
 
 
@@ -1388,7 +2020,7 @@ def main() -> None:  # pylint: disable=too-many-locals
     metrics_path = OUTPUT_DIR / "metrics.json"
     if PLOT_SAVED_MODEL_ONLY:
         saved_metrics = load_json_mapping(metrics_path, "Saved metrics")
-        use_saved_model(
+        plot_metrics = use_saved_model(
             device,
             calculate_metrics=False,
             ray_tuning_seconds=float(saved_metrics["ray_tuning_seconds"]),
@@ -1396,6 +2028,9 @@ def main() -> None:  # pylint: disable=too-many-locals
                 saved_metrics["final_training_seconds"]
             ),
         )
+        saved_metrics.update(plot_metrics)
+        with metrics_path.open("w", encoding="utf-8") as file:
+            json.dump(saved_metrics, file, indent=2)
         print(f"Plots written to {OUTPUT_DIR}")
         return
 
@@ -1438,6 +2073,7 @@ def main() -> None:  # pylint: disable=too-many-locals
                 "training_mesh_points": math.prod(training_shape),
             }
         )
+        saved_metrics.pop("cost_model", None)
         with metrics_path.open("w", encoding="utf-8") as file:
             json.dump(saved_metrics, file, indent=2)
         print(f"Model and loss history written to {OUTPUT_DIR}")

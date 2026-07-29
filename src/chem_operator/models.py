@@ -1,7 +1,7 @@
 """Framework adapters and shared neural-operator benchmark utilities.
 
 The adapters in this module are intentionally separate from HDF5 ingestion:
-``CanteraDataset`` returns structured samples, ``DataProcessor`` transforms
+``ChemOperatorDataset`` returns structured samples, ``DataProcessor`` transforms
 their fields, and an adapter supplies the shape expected by a model framework.
 """
 
@@ -117,7 +117,7 @@ class DeepXDEAdapter(Dataset):
     Parameters
     ----------
     dataset:
-        A map-style dataset, normally a ``CanteraDataset`` configured with
+        A map-style dataset, normally a ``ChemOperatorDataset`` configured with
         ``task="operator_cartesian"`` and one input step.
     processor:
         A state-target ``DataProcessor``. Its packed final input state becomes

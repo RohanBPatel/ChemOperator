@@ -7,7 +7,7 @@ import pytest
 import torch
 from physicsnemo.sym.eq.phy_informer import PhysicsInformer
 
-from chem_operator.datasets import CanteraDataset, SimulationDatasetGenerator
+from chem_operator.datasets import ChemOperatorDataset, SimulationDatasetGenerator
 from chem_operator.reactors.pipe_flow.dataset_generator import (
     HagenPoiseuille,
     HagenPoiseuillePipeFlowSim,
@@ -96,7 +96,7 @@ def test_hdf5_round_trip(tmp_path) -> None:
     splits = generator.generate_splits(n_cases=3)
     generator.save_splits(splits)
 
-    dataset = CanteraDataset(
+    dataset = ChemOperatorDataset(
         tmp_path / "hagen_poiseuille_pipe_flow_train.h5",
         task="field_map",
         coordinate_name="r",

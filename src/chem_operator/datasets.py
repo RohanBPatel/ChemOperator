@@ -326,7 +326,7 @@ def raw_steps_to_possible_sample_t0s(
     )
     return max(0, total_steps - required_steps + 1)
 
-class CanteraDataset(Dataset):
+class ChemOperatorDataset(Dataset):
     """Lazy reader for one SimulationDatasetGenerator HDF5 file.
 
     Samples are returned as structured dictionaries of raw, unnormalized
@@ -389,7 +389,7 @@ class CanteraDataset(Dataset):
 
         if not self.path.is_file():
             raise FileNotFoundError(
-                f"CanteraDataset expects one HDF5 file: {self.path}"
+                f"ChemOperatorDataset expects one HDF5 file: {self.path}"
             )
 
         self._file_handle: h5py.File | None = None
@@ -447,7 +447,7 @@ class CanteraDataset(Dataset):
             if isinstance(value, h5py.Dataset):
                 paths.append(path)
             elif isinstance(value, h5py.Group):
-                paths.extend(CanteraDataset._dataset_paths(value, path))
+                paths.extend(ChemOperatorDataset._dataset_paths(value, path))
         return paths
 
     @staticmethod
@@ -458,7 +458,7 @@ class CanteraDataset(Dataset):
             if isinstance(value, h5py.Dataset):
                 paths.append(path)
             elif isinstance(value, h5py.Group):
-                paths.extend(CanteraDataset._constant_paths(value, path))
+                paths.extend(ChemOperatorDataset._constant_paths(value, path))
         return paths
 
     @staticmethod
@@ -513,7 +513,7 @@ class CanteraDataset(Dataset):
         return torch_dtype
 
     def _to_tensor(self, value: Any, *, name: str) -> torch.Tensor:
-        value = CanteraDataset._decode(value)
+        value = ChemOperatorDataset._decode(value)
         array = np.asarray(value)
         if array.dtype.kind in {"O", "S", "U"}:
             raise TypeError(f"{name!r} is non-numeric and cannot be a tensor.")

@@ -25,7 +25,7 @@ import torch
 from torch.utils.data import DataLoader
 
 from chem_operator.datasets import (
-    CanteraDataset,
+    ChemOperatorDataset,
     DataProcessor,
     FieldPacker,
     IdentityNormalizer,
@@ -118,8 +118,8 @@ DATASETS = (
 
 def make_dataset(
     spec: DatasetSpec,
-) -> tuple[CanteraDataset, DataProcessor, ProcessedDataset]:
-    raw_dataset = CanteraDataset(
+) -> tuple[ChemOperatorDataset, DataProcessor, ProcessedDataset]:
+    raw_dataset = ChemOperatorDataset(
         spec.path,
         task="next_step",
         coordinate_name=spec.coordinate,
@@ -148,7 +148,7 @@ def make_dataset(
 
 
 def evenly_spaced_case_indices(
-    dataset: CanteraDataset, max_points: int
+    dataset: ChemOperatorDataset, max_points: int
 ) -> list[int]:
     case_name = dataset.sample_index[0][0]
     case_indices = [

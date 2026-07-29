@@ -29,7 +29,7 @@ import torch
 from torch import nn
 from torch.utils.data import DataLoader, Subset
 
-from chem_operator.datasets import CanteraDataset
+from chem_operator.datasets import ChemOperatorDataset
 from chem_operator.models import (
     FNOAdapter,
     FNOChannel,
@@ -79,9 +79,9 @@ GPUS_PER_TRIAL = 1 if torch.cuda.is_available() else 0
 MAX_CONCURRENT_TRIALS = 1
 
 
-def raw_dataset(data_dir: Path, split: str) -> CanteraDataset:
+def raw_dataset(data_dir: Path, split: str) -> ChemOperatorDataset:
     """Open one complete transient trajectory per HDF5 case."""
-    return CanteraDataset(
+    return ChemOperatorDataset(
         data_dir / f"{FILE_STEM}_{split}.h5",
         task="operator_cartesian",
         coordinate_name="t",
@@ -99,7 +99,7 @@ def make_adapter(
     split: str,
     normalizer: ZScoreNormalizer,
     maximum: int | None,
-) -> tuple[CanteraDataset, FNOAdapter]:
+) -> tuple[ChemOperatorDataset, FNOAdapter]:
     """Return an open raw dataset and its FNO adapter."""
     dataset = raw_dataset(data_dir, split)
     adapter = FNOAdapter(

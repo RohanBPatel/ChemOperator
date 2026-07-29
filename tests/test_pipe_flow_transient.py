@@ -8,7 +8,7 @@ import torch
 from scipy.special import jn_zeros  # pylint: disable=no-name-in-module
 from sympy import Derivative, Symbol
 
-from chem_operator.datasets import CanteraDataset, SimulationDatasetGenerator
+from chem_operator.datasets import ChemOperatorDataset, SimulationDatasetGenerator
 from chem_operator.reactors.pipe_flow_transient.dataset_generator import (
     TransientHagenPoiseuille,
     TransientHagenPoiseuillePipeFlowSim,
@@ -128,7 +128,7 @@ def test_equal_coordinate_lengths_round_trip(
     splits = generator.generate_splits(n_cases=3)
     generator.save_splits(splits)
 
-    dataset = CanteraDataset(
+    dataset = ChemOperatorDataset(
         tmp_path / "transient_hagen_poiseuille_pipe_flow_train.h5",
         task="next_step",
         coordinate_name="t",
