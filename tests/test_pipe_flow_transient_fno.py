@@ -21,10 +21,10 @@ from chem_operator.sampling import Constant, Uniform
 
 
 SCRIPT_PATH = (
-    Path(__file__).resolve().parents[1] / "scripts" / "pip_flow_transient_fno.py"
+    Path(__file__).resolve().parents[1] / "scripts" / "pipe_flow_transient_fno.py"
 )
 SCRIPT_SPEC = importlib.util.spec_from_file_location(
-    "pip_flow_transient_fno",
+    "pipe_flow_transient_fno",
     SCRIPT_PATH,
 )
 assert SCRIPT_SPEC is not None and SCRIPT_SPEC.loader is not None
