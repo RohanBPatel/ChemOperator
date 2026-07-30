@@ -18,8 +18,9 @@ import numpy as np
 import torch
 from torch.utils.data import DataLoader, Dataset
 
-from chem_operator.normalization import ZScoreNormalizer
 from chem_operator.dataset_processing import DataProcessor
+from chem_operator.normalization import ZScoreNormalizer
+from chem_operator.utils import to_numpy
 
 
 ArrayTransform = Callable[[np.ndarray], np.ndarray]
@@ -128,7 +129,14 @@ class DeepXDEAdapter(Dataset):
         coordinate and permits trajectories with different grids.
     resample_points:
         If set, interpolate every trajectory onto a shared grid. Relative
-        coordinates are useful for adaptively stepped trajectories.
+        coordinates are useful for adaptively stepped trajectories. Resampling
+        is only defined for one-dimensional trajectories.
+    coordinate_names:
+        Ordered coordinate names for a tensor-product spatial grid. The first
+        coordinate must be the leading step dimension used by
+        ``ChemOperatorDataset``; subsequent coordinates must be leading feature
+        dimensions of every packed output field. ``coordinate_name`` remains
+        the one-dimensional shorthand.
     """
 
     def __init__(
@@ -138,6 +146,7 @@ class DeepXDEAdapter(Dataset):
         *,
         format: DeepXDEFormat = "cartesian_product",
         coordinate_name: str | None = None,
+        coordinate_names: Sequence[str] | None = None,
         include_constants: bool = False,
         include_initial: bool = True,
         resample_points: int | None = None,
@@ -154,6 +163,29 @@ class DeepXDEAdapter(Dataset):
             raise ValueError("coordinate_mode must be 'physical' or 'relative'.")
         if resample_points is not None and resample_points < 2:
             raise ValueError("resample_points must be at least two.")
+        if coordinate_name is not None and coordinate_names is not None:
+            raise ValueError(
+                "Use coordinate_name or coordinate_names, not both."
+            )
+        if isinstance(coordinate_names, str):
+            raise TypeError("coordinate_names must be a sequence of names.")
+        resolved_coordinate_names = (
+            tuple(coordinate_names)
+            if coordinate_names is not None
+            else ((coordinate_name,) if coordinate_name is not None else ())
+        )
+        if resolved_coordinate_names and (
+            any(not name for name in resolved_coordinate_names)
+            or len(set(resolved_coordinate_names))
+            != len(resolved_coordinate_names)
+        ):
+            raise ValueError(
+                "coordinate_names must contain distinct, non-empty names."
+            )
+        if resample_points is not None and len(resolved_coordinate_names) > 1:
+            raise ValueError(
+                "resample_points is only supported for one-dimensional grids."
+            )
         if max_trajectories is not None and max_trajectories < 1:
             raise ValueError("max_trajectories must be positive.")
         if processor.target_transform.is_delta:
@@ -165,7 +197,13 @@ class DeepXDEAdapter(Dataset):
         self.dataset = dataset
         self.processor = processor
         self.format = format
-        self.coordinate_name = coordinate_name
+        self.coordinate_names = resolved_coordinate_names
+        # Keep the original attribute useful for one-dimensional callers.
+        self.coordinate_name = (
+            resolved_coordinate_names[0]
+            if len(resolved_coordinate_names) == 1
+            else None
+        )
         self.include_constants = include_constants
         self.include_initial = include_initial
         self.resample_points = resample_points
@@ -193,13 +231,7 @@ class DeepXDEAdapter(Dataset):
             resampled, trunk = self._resample([item])
             item = resampled[0]
         else:
-            trunk_values = item.coordinate
-            if self.coordinate_mode == "relative":
-                span = item.coordinate[-1] - item.coordinate[0]
-                if span <= 0:
-                    raise ValueError("Cannot normalize a zero-width coordinate.")
-                trunk_values = (item.coordinate - item.coordinate[0]) / span
-            trunk = trunk_values.reshape(-1, 1)
+            trunk = self._trunk(item.coordinate)
         return {
             "branch": torch.from_numpy(item.branch),
             "trunk": torch.from_numpy(
@@ -212,11 +244,11 @@ class DeepXDEAdapter(Dataset):
 
     @staticmethod
     def _numpy(tensor: torch.Tensor) -> np.ndarray:
-        return tensor.detach().cpu().numpy()
+        return to_numpy(tensor)
 
-    def _coordinate_key(self, sample: Mapping[str, Any]) -> str:
-        if self.coordinate_name is not None:
-            return self.coordinate_name
+    def _coordinate_keys(self, sample: Mapping[str, Any]) -> tuple[str, ...]:
+        if self.coordinate_names:
+            return self.coordinate_names
         metadata = sample.get("metadata", {})
         name = metadata.get("coordinate_name")
         if name is None:
@@ -226,8 +258,148 @@ class DeepXDEAdapter(Dataset):
                     "coordinate_name is required when a sample has multiple "
                     "output coordinates."
                 )
-            return next(iter(coordinates))
-        return str(name)
+            return (next(iter(coordinates)),)
+        return (str(name),)
+
+    @staticmethod
+    def _coordinate_vector(
+        sample: Mapping[str, Any],
+        window: Literal["input", "output"],
+        name: str,
+    ) -> np.ndarray:
+        coordinates = sample[f"{window}_coordinates"]
+        if name not in coordinates:
+            raise KeyError(
+                f"Coordinate {name!r} is absent from {window}_coordinates."
+            )
+        value = DeepXDEAdapter._numpy(coordinates[name]).reshape(-1)
+        if value.size == 0:
+            raise ValueError(f"Coordinate {name!r} has no points.")
+        return value
+
+    @staticmethod
+    def _mesh_coordinate(vectors: Sequence[np.ndarray]) -> np.ndarray:
+        if len(vectors) == 1:
+            return vectors[0]
+        mesh = np.meshgrid(*vectors, indexing="ij")
+        return np.stack(mesh, axis=-1).reshape(-1, len(vectors))
+
+    def _coordinate_vectors(
+        self,
+        processed: Mapping[str, Any],
+        output_steps: int,
+    ) -> tuple[np.ndarray, ...]:
+        names = self._coordinate_keys(processed)
+        if self.resample_points is not None and len(names) > 1:
+            raise ValueError(
+                "resample_points is only supported for one-dimensional grids."
+            )
+        output_first = self._coordinate_vector(processed, "output", names[0])
+        if output_first.size != output_steps:
+            raise ValueError(
+                f"Leading coordinate {names[0]!r} has {output_first.size} "
+                f"output points but the target has {output_steps} steps."
+            )
+        if self.include_initial:
+            input_first = self._coordinate_vector(
+                processed, "input", names[0]
+            )
+            first = np.concatenate((input_first[-1:], output_first))
+        else:
+            first = output_first
+
+        vectors = [first]
+        for name in names[1:]:
+            input_values = self._coordinate_vector(processed, "input", name)
+            output_values = self._coordinate_vector(processed, "output", name)
+            if (
+                input_values.shape != output_values.shape
+                or not np.allclose(
+                    input_values,
+                    output_values,
+                    rtol=1e-6,
+                    atol=1e-8,
+                )
+            ):
+                raise ValueError(
+                    f"Coordinate {name!r} must be unchanged between input "
+                    "and output windows."
+                )
+            vectors.append(output_values)
+
+        for name, values in zip(names, vectors):
+            if values.size < 2 or np.any(np.diff(values) <= 0):
+                raise ValueError(
+                    f"Coordinate {name!r} must contain at least two strictly "
+                    "increasing points."
+                )
+        return tuple(
+            np.asarray(values, dtype=self.dtype) for values in vectors
+        )
+
+    def _spatial_target(
+        self,
+        tensor: torch.Tensor,
+        secondary_shape: tuple[int, ...],
+    ) -> tuple[np.ndarray, tuple[str, ...]]:
+        """Restore spatial feature axes hidden by ``FieldPacker``."""
+
+        if not secondary_shape:
+            values = self._numpy(
+                self.processor.field_packer.to_channel_last(tensor)
+            )
+            return values, ()
+
+        layout = getattr(self.processor, "_output_layout", None)
+        if layout is None:
+            raise RuntimeError(
+                "DataProcessor did not expose an output field layout."
+            )
+        fields = self.processor.field_packer.unpack_variable(
+            tensor,
+            layout=layout,
+        )
+        spatial_fields: list[np.ndarray] = []
+        labels: list[str] = []
+        for name in layout.names:
+            field = self._numpy(fields[name])
+            actual_secondary = tuple(
+                field.shape[1 : 1 + len(secondary_shape)]
+            )
+            if actual_secondary != secondary_shape:
+                raise ValueError(
+                    f"Field {name!r} has secondary spatial shape "
+                    f"{actual_secondary}; expected {secondary_shape} from "
+                    "coordinate_names."
+                )
+            channel_shape = field.shape[1 + len(secondary_shape) :]
+            channel_width = int(np.prod(channel_shape)) if channel_shape else 1
+            spatial_fields.append(
+                field.reshape(
+                    (field.shape[0], *secondary_shape, channel_width)
+                )
+            )
+            if channel_width == 1:
+                labels.append(name)
+            else:
+                labels.extend(
+                    f"{name}[{index}]" for index in range(channel_width)
+                )
+        return np.concatenate(spatial_fields, axis=-1), tuple(labels)
+
+    def _trunk(self, coordinate: np.ndarray) -> np.ndarray:
+        values = (
+            coordinate.reshape(-1, 1)
+            if coordinate.ndim == 1
+            else coordinate
+        )
+        if self.coordinate_mode == "relative":
+            minimum = np.min(values, axis=0)
+            span = np.max(values, axis=0) - minimum
+            if np.any(span <= 0):
+                raise ValueError("Cannot normalize a zero-width coordinate.")
+            values = (values - minimum) / span
+        return np.asarray(values, dtype=self.dtype)
 
     def _load_trajectory(self, index: int) -> _Trajectory:
         processed = self.processor(self.dataset[index])
@@ -239,27 +411,37 @@ class DeepXDEAdapter(Dataset):
         if self.include_constants and constants.size:
             branch = np.concatenate((branch, constants))
 
-        coordinate_name = self._coordinate_key(processed)
-        output_coordinate = self._numpy(
-            processed["output_coordinates"][coordinate_name]
-        ).reshape(-1)
-        target = y
-        coordinate = output_coordinate
-        if self.include_initial:
-            input_coordinate = self._numpy(
-                processed["input_coordinates"][coordinate_name]
-            ).reshape(-1)
-            coordinate = np.concatenate((input_coordinate[-1:], coordinate))
-            target = np.concatenate((x[-1:], target), axis=0)
+        vectors = self._coordinate_vectors(processed, y.shape[0])
+        secondary_shape = tuple(vector.size for vector in vectors[1:])
+        if secondary_shape:
+            spatial_y, labels = self._spatial_target(
+                processed["y"], secondary_shape
+            )
+            spatial_x, input_labels = self._spatial_target(
+                processed["x"], secondary_shape
+            )
+            if input_labels != labels:
+                raise ValueError(
+                    "Input and output field labels differ on the spatial grid."
+                )
+            target_grid = spatial_y
+            if self.include_initial:
+                target_grid = np.concatenate(
+                    (spatial_x[-1:], target_grid),
+                    axis=0,
+                )
+            target = target_grid.reshape(-1, target_grid.shape[-1])
+        else:
+            labels = tuple(processed["labels"]["y"])
+            target = y
+            if self.include_initial:
+                target = np.concatenate((x[-1:], target), axis=0)
 
+        coordinate = self._mesh_coordinate(vectors)
         if coordinate.shape[0] != target.shape[0]:
             raise ValueError(
-                f"Coordinate {coordinate_name!r} has {coordinate.shape[0]} "
-                f"points but the target has {target.shape[0]}."
-            )
-        if np.any(np.diff(coordinate) <= 0):
-            raise ValueError(
-                f"Coordinate {coordinate_name!r} must be strictly increasing."
+                f"Coordinate mesh has {coordinate.shape[0]} points but the "
+                f"target has {target.shape[0]}."
             )
 
         return _Trajectory(
@@ -267,7 +449,7 @@ class DeepXDEAdapter(Dataset):
             target=target.astype(self.dtype, copy=False),
             coordinate=coordinate.astype(self.dtype, copy=False),
             model_input=x.astype(self.dtype, copy=False),
-            labels=tuple(processed["labels"]["y"]),
+            labels=labels,
             constant_labels=tuple(processed["labels"]["constants"]),
             metadata=processed.get("metadata", {}),
         )
@@ -288,6 +470,10 @@ class DeepXDEAdapter(Dataset):
         self, trajectories: Sequence[_Trajectory]
     ) -> tuple[list[_Trajectory], np.ndarray]:
         assert self.resample_points is not None
+        if any(item.coordinate.ndim != 1 for item in trajectories):
+            raise ValueError(
+                "resample_points is only supported for one-dimensional grids."
+            )
         if self.coordinate_mode == "relative":
             common = np.linspace(0.0, 1.0, self.resample_points, dtype=self.dtype)
         else:
@@ -321,7 +507,8 @@ class DeepXDEAdapter(Dataset):
                     metadata=item.metadata,
                 )
             )
-        return result, common.reshape(-1, 1)
+        trunk = common.reshape(-1, 1)
+        return result, trunk
 
     def _materialize(self) -> OperatorArrays:
         trajectories = [self._load_trajectory(index) for index in self.indices]
@@ -341,7 +528,7 @@ class DeepXDEAdapter(Dataset):
         if self.resample_points is not None:
             trajectories, common_trunk = self._resample(trajectories)
         else:
-            common_trunk = trajectories[0].coordinate.reshape(-1, 1)
+            common_trunk = self._trunk(trajectories[0].coordinate)
 
         branches = np.stack([item.branch for item in trajectories])
         model_inputs = np.stack([item.model_input for item in trajectories])
@@ -350,7 +537,7 @@ class DeepXDEAdapter(Dataset):
 
         if self.format == "cartesian_product":
             for item in trajectories[1:]:
-                candidate = item.coordinate.reshape(-1, 1)
+                candidate = self._trunk(item.coordinate)
                 if self.resample_points is None and (
                     candidate.shape != common_trunk.shape
                     or not np.allclose(candidate, common_trunk, rtol=1e-5, atol=1e-8)
@@ -384,12 +571,7 @@ class DeepXDEAdapter(Dataset):
         for item in trajectories:
             count = item.target.shape[0]
             repeated_branch.append(np.repeat(item.branch[None, :], count, axis=0))
-            coordinate = item.coordinate
-            if self.coordinate_mode == "relative" and self.resample_points is None:
-                coordinate = (coordinate - coordinate[0]) / (
-                    coordinate[-1] - coordinate[0]
-                )
-            trunks.append(coordinate.reshape(-1, 1))
+            trunks.append(self._trunk(item.coordinate))
             targets_list.append(item.target)
             slices_list.append(slice(start, start + count))
             start += count
@@ -507,13 +689,13 @@ class NeuralOperatorAdapter(Dataset):
 
 
 class FNOAdapter(Dataset):
-    """Adapt complete two-dimensional fields for NeuralOperator FNOs.
+    """Adapt complete tensor-product fields for NeuralOperator FNOs.
 
-    The adapter supports transient ``(time, space)`` trajectories and steady
-    ``(axial, radial)`` fields through configurable :class:`FNOChannel`
-    definitions. Scalar parameters and constants are spatially broadcast;
-    scalar fields and selected species retain their complete two-dimensional
-    grids.
+    The adapter supports one-dimensional profiles, transient ``(time, space)``
+    trajectories, and steady ``(axial, radial)`` fields through configurable
+    :class:`FNOChannel` definitions. Scalar parameters and constants are
+    spatially broadcast; scalar fields and selected species retain their
+    complete tensor-product grids.
 
     The legacy ``field_names`` / ``constant_names`` interface remains a
     shorthand for constant inputs, scalar-field outputs, and coordinates
@@ -527,7 +709,7 @@ class FNOAdapter(Dataset):
         *,
         input_channels: Sequence[FNOChannel] | None = None,
         output_channels: Sequence[FNOChannel] | None = None,
-        coordinate_names: tuple[str, str] | None = None,
+        coordinate_names: Sequence[str] | None = None,
         field_names: Sequence[str] | None = None,
         constant_names: Sequence[str] | None = None,
         time_coordinate: str = "t",
@@ -573,10 +755,18 @@ class FNOAdapter(Dataset):
             raise ValueError("input_channels must contain at least one channel.")
         if not resolved_outputs:
             raise ValueError("output_channels must contain at least one channel.")
-        if len(resolved_coordinates) != 2:
-            raise ValueError("coordinate_names must contain exactly two names.")
-        if resolved_coordinates[0] == resolved_coordinates[1]:
-            raise ValueError("FNO coordinate names must be distinct.")
+        if isinstance(resolved_coordinates, str):
+            raise TypeError("coordinate_names must be a sequence of names.")
+        resolved_coordinates = tuple(resolved_coordinates)
+        if not resolved_coordinates:
+            raise ValueError("coordinate_names must contain at least one name.")
+        if (
+            any(not name for name in resolved_coordinates)
+            or len(set(resolved_coordinates)) != len(resolved_coordinates)
+        ):
+            raise ValueError(
+                "FNO coordinate names must be distinct and non-empty."
+            )
         labels = [
             channel.label for channel in resolved_inputs + resolved_outputs
         ]
@@ -589,7 +779,7 @@ class FNOAdapter(Dataset):
         self.normalizer = normalizer
         self.input_channels = resolved_inputs
         self.output_channels = resolved_outputs
-        self.coordinate_names = tuple(resolved_coordinates)
+        self.coordinate_names = resolved_coordinates
         # Compatibility attributes used by existing scripts and checkpoints.
         self.field_names = tuple(
             channel.label for channel in self.output_channels
@@ -597,8 +787,27 @@ class FNOAdapter(Dataset):
         self.constant_names = tuple(
             channel.label for channel in self.input_channels
         )
-        self.time_coordinate, self.space_coordinate = self.coordinate_names
+        self.time_coordinate = self.coordinate_names[0]
+        self.space_coordinate = (
+            self.coordinate_names[1]
+            if len(self.coordinate_names) > 1
+            else None
+        )
         self.max_trajectories = max_trajectories
+
+    def checkpoint_config(self) -> dict[str, Any]:
+        """Return the JSON-compatible adapter definition for a checkpoint."""
+
+        return {
+            "input_channels": [
+                asdict(channel) for channel in self.input_channels
+            ],
+            "output_channels": [
+                asdict(channel) for channel in self.output_channels
+            ],
+            "coordinate_names": list(self.coordinate_names),
+            "max_trajectories": self.max_trajectories,
+        }
 
     @staticmethod
     def required_field_names(
@@ -688,10 +897,10 @@ class FNOAdapter(Dataset):
                     f"Species {channel.species!r} is absent from "
                     f"field {channel.key!r}."
                 ) from exc
-            if grouped.ndim != 3 or grouped.shape[-1] != len(species_names):
+            if grouped.ndim < 2 or grouped.shape[-1] != len(species_names):
                 raise ValueError(
                     f"FNO species field {channel.key!r} must have "
-                    "(first coordinate, second coordinate, species) shape; "
+                    "(*spatial coordinates, species) shape; "
                     f"received {tuple(grouped.shape)}."
                 )
             value = grouped[..., species_index]
@@ -710,7 +919,7 @@ class FNOAdapter(Dataset):
     @staticmethod
     def _as_grid(
         value: torch.Tensor,
-        shape: tuple[int, int],
+        shape: tuple[int, ...],
         label: str,
     ) -> torch.Tensor:
         if value.numel() == 1:
@@ -725,38 +934,45 @@ class FNOAdapter(Dataset):
     def _coordinates(
         self,
         sample: Mapping[str, Any],
-        shape: tuple[int, int],
-    ) -> tuple[torch.Tensor, torch.Tensor]:
-        first_name, second_name = self.coordinate_names
+        shape: tuple[int, ...],
+    ) -> tuple[torch.Tensor, ...]:
+        first_name = self.coordinate_names[0]
         first_values = torch.cat(
             (
                 sample["input_coordinates"][first_name],
                 sample["output_coordinates"][first_name],
             )
         ).reshape(-1)
-        input_second = sample["input_coordinates"][second_name].reshape(-1)
-        output_second = sample["output_coordinates"][second_name].reshape(-1)
-        if input_second.shape != output_second.shape or not torch.equal(
-            input_second,
-            output_second,
-        ):
-            raise ValueError(
-                f"Coordinate {second_name!r} must be unchanged "
-                "across the complete trajectory."
-            )
-        if (first_values.numel(), output_second.numel()) != shape:
+        coordinates = [first_values]
+        for name in self.coordinate_names[1:]:
+            input_values = sample["input_coordinates"][name].reshape(-1)
+            output_values = sample["output_coordinates"][name].reshape(-1)
+            if input_values.shape != output_values.shape or not torch.equal(
+                input_values,
+                output_values,
+            ):
+                raise ValueError(
+                    f"Coordinate {name!r} must be unchanged "
+                    "across the complete trajectory."
+                )
+            coordinates.append(output_values)
+
+        coordinate_shape = tuple(value.numel() for value in coordinates)
+        if coordinate_shape != shape:
             raise ValueError(
                 "Coordinate sizes do not match the FNO field grid: "
-                f"coordinates {(first_values.numel(), output_second.numel())}, "
+                f"coordinates {coordinate_shape}, "
                 f"field {shape}."
             )
-        if first_values.numel() < 2 or output_second.numel() < 2:
-            raise ValueError("FNO fields require at least a 2-by-2 grid.")
-        if not torch.all(first_values[1:] > first_values[:-1]) or not torch.all(
-            output_second[1:] > output_second[:-1]
-        ):
-            raise ValueError("FNO coordinates must be strictly increasing.")
-        return first_values, output_second
+        for name, values in zip(self.coordinate_names, coordinates):
+            if values.numel() < 2 or not torch.all(
+                values[1:] > values[:-1]
+            ):
+                raise ValueError(
+                    f"FNO coordinate {name!r} must contain at least two "
+                    "strictly increasing points."
+                )
+        return tuple(coordinates)
 
     def physical_item(self, index: int) -> dict[str, Any]:
         """Return one unnormalized model input, target, and grid."""
@@ -772,9 +988,10 @@ class FNOAdapter(Dataset):
             raise ValueError(
                 "At least one FNO output channel must define the spatial grid."
             )
-        if field_outputs[0].ndim != 2:
+        if field_outputs[0].ndim != len(self.coordinate_names):
             raise ValueError(
-                "FNO spatial channels must have two dimensions; received "
+                "FNO spatial channels must have one dimension per configured "
+                f"coordinate ({len(self.coordinate_names)}); received "
                 f"{tuple(field_outputs[0].shape)}."
             )
         shape = tuple(field_outputs[0].shape)
@@ -797,12 +1014,11 @@ class FNOAdapter(Dataset):
                 for channel in self.input_channels
             ]
         )
-        first_values, second_values = self._coordinates(sample, shape)
+        coordinates = self._coordinates(sample, shape)
         return {
             "x": model_input,
             "y": output,
-            self.coordinate_names[0]: first_values,
-            self.coordinate_names[1]: second_values,
+            **dict(zip(self.coordinate_names, coordinates)),
             "metadata": sample.get("metadata", {}),
         }
 
@@ -831,26 +1047,32 @@ class FNOAdapter(Dataset):
         return {
             "x": model_input,
             "y": target,
-            self.coordinate_names[0]: physical[self.coordinate_names[0]],
-            self.coordinate_names[1]: physical[self.coordinate_names[1]],
+            **{
+                name: physical[name]
+                for name in self.coordinate_names
+            },
         }
 
     def denormalize_output(self, output: torch.Tensor) -> torch.Tensor:
         """Convert channel-first FNO output back to physical field values."""
-        if output.ndim < 3 or output.shape[-3] != len(self.output_channels):
+        channel_axis = -(len(self.coordinate_names) + 1)
+        if (
+            output.ndim < len(self.coordinate_names) + 1
+            or output.shape[channel_axis] != len(self.output_channels)
+        ):
             raise ValueError(
-                "FNO output must end in (channel, first, second) with "
+                "FNO output must end in (channel, *spatial) with "
                 f"{len(self.output_channels)} channels; received "
                 f"{tuple(output.shape)}."
             )
         fields = [
             self.normalizer.denormalize(
-                output.select(-3, index),
+                output.select(channel_axis, index),
                 channel.label,
             )
             for index, channel in enumerate(self.output_channels)
         ]
-        return torch.stack(fields, dim=-3)
+        return torch.stack(fields, dim=channel_axis)
 
 
 class AutoencoderAdapter(Dataset):
@@ -1252,7 +1474,7 @@ def fit_incremental_pod_dataset(
         )
         try:
             return fit_incremental_pod(
-                (batch.numpy() for batch in loader),
+                (to_numpy(batch) for batch in loader),
                 variance_threshold=variance_threshold,
                 n_components=candidate,
             )
@@ -1310,6 +1532,20 @@ class DeepONetBenchmarkConfig:
     variance_threshold: float = 0.999
     seed: int = 7
     plot_cases: int = 2
+
+    def to_dict(self) -> dict[str, Any]:
+        """Return JSON-compatible architecture and training metadata."""
+
+        return asdict(self)
+
+    @classmethod
+    def from_dict(
+        cls,
+        values: Mapping[str, Any],
+    ) -> "DeepONetBenchmarkConfig":
+        """Restore a configuration previously produced by :meth:`to_dict`."""
+
+        return cls(**dict(values))
 
 
 @dataclass(frozen=True)
@@ -1407,10 +1643,16 @@ class DeepONetTrainingHistory:
     loss_train: list[list[float]]
     loss_test: list[list[float]]
     loss_name: str = "relative_l2"
+    best_epoch: int | None = None
+    best_valid_loss: float = float("inf")
 
 
 TensorTransform = Callable[[torch.Tensor], torch.Tensor]
 MetricReporter = Callable[[Mapping[str, float | int]], None]
+CheckpointCallback = Callable[
+    [torch.nn.Module, Mapping[str, float | int]],
+    None,
+]
 
 
 def deeponet_parameter_counts(model: torch.nn.Module) -> dict[str, int]:
@@ -1591,6 +1833,10 @@ def train_deeponet_lazy(
     target_transform: TensorTransform | None = None,
     pod: PODTransform | None = None,
     reporter: MetricReporter | None = None,
+    checkpoint_callback: CheckpointCallback | None = None,
+    early_stopping_patience: int | None = None,
+    initial_state_dict: Mapping[str, torch.Tensor] | None = None,
+    start_epoch: int = 0,
     num_workers: int = 0,
     pin_memory: bool = False,
     device: str | torch.device | None = None,
@@ -1599,6 +1845,10 @@ def train_deeponet_lazy(
 
     if config.epochs < 1 or config.batch_size < 1:
         raise ValueError("epochs and batch_size must be positive.")
+    if start_epoch < 0 or start_epoch >= config.epochs:
+        raise ValueError("start_epoch must be in [0, config.epochs).")
+    if early_stopping_patience is not None and early_stopping_patience < 1:
+        raise ValueError("early_stopping_patience must be positive.")
     if config.branch_hidden_layers < 1:
         raise ValueError("branch_hidden_layers must be positive.")
     if pod is None and config.trunk_hidden_layers < 1:
@@ -1637,6 +1887,8 @@ def train_deeponet_lazy(
     else:
         model = _PODOnlyDeepONet(branch_width, pod, config)
     model = model.to(selected_device)
+    if initial_state_dict is not None:
+        model.load_state_dict(initial_state_dict, strict=True)
     parameter_counts = deeponet_parameter_counts(model)
     optimizer = torch.optim.Adam(
         model.parameters(),
@@ -1665,7 +1917,9 @@ def train_deeponet_lazy(
     )
     history = DeepONetTrainingHistory([], [], [], config.loss)
     best_valid_loss = float("inf")
-    for epoch in range(1, config.epochs + 1):
+    best_state: dict[str, torch.Tensor] | None = None
+    stale_epochs = 0
+    for epoch in range(start_epoch + 1, config.epochs + 1):
         train_loss = _loader_loss(
             model,
             train_loader,
@@ -1682,7 +1936,18 @@ def train_deeponet_lazy(
             pin_memory=pin_memory,
             loss_name=config.loss,
         )
-        best_valid_loss = min(best_valid_loss, valid_loss)
+        is_best = valid_loss < best_valid_loss
+        if is_best:
+            best_valid_loss = valid_loss
+            history.best_epoch = epoch
+            history.best_valid_loss = valid_loss
+            best_state = {
+                name: value.detach().cpu().clone()
+                for name, value in model.state_dict().items()
+            }
+            stale_epochs = 0
+        else:
+            stale_epochs += 1
         history.steps.append(epoch)
         history.loss_train.append([train_loss])
         history.loss_test.append([valid_loss])
@@ -1690,6 +1955,8 @@ def train_deeponet_lazy(
             "train_loss": train_loss,
             "valid_loss": valid_loss,
             "best_valid_loss": best_valid_loss,
+            "best_epoch": history.best_epoch or epoch,
+            "is_best": int(is_best),
             "epoch": epoch,
             "branch_hidden_layers": config.branch_hidden_layers,
             "trunk_hidden_layers": (
@@ -1697,6 +1964,8 @@ def train_deeponet_lazy(
             ),
             **parameter_counts,
         }
+        if checkpoint_callback is not None:
+            checkpoint_callback(model, metrics)
         if reporter is not None:
             reporter(metrics)
         if reporter is None and (
@@ -1708,6 +1977,14 @@ def train_deeponet_lazy(
                 f"epoch={epoch:5d} train_loss={train_loss:.6e} "
                 f"valid_loss={valid_loss:.6e}"
             )
+        if (
+            early_stopping_patience is not None
+            and stale_epochs >= early_stopping_patience
+        ):
+            break
+    if best_state is None:
+        raise RuntimeError("DeepONet training did not produce a valid checkpoint.")
+    model.load_state_dict(best_state)
     return model, history
 
 
@@ -1925,7 +2202,7 @@ def run_deepxde_benchmark(
     output_path = Path(output_dir)
     output_path.mkdir(parents=True, exist_ok=True)
     first_train = train[0]
-    scaler = CoordinateScaler.fit(first_train["trunk"].numpy())
+    scaler = CoordinateScaler.fit(to_numpy(first_train["trunk"]))
     if pod is None:
         pod = fit_incremental_pod_dataset(
             train,
@@ -1998,15 +2275,21 @@ def run_deepxde_benchmark(
                 (branch.to(pod_device), trunk.to(pod_device))
             )
             pod_normalized = pod.unflatten_tensor(pod_flattened).cpu()
-            reference = normalizer.denormalize_flattened(
-                batch["target"], "variable"
-            ).numpy()
-            direct_prediction = normalizer.denormalize_flattened(
-                direct_normalized, "variable"
-            ).numpy()
-            pod_prediction = normalizer.denormalize_flattened(
-                pod_normalized, "variable"
-            ).numpy()
+            reference = to_numpy(
+                normalizer.denormalize_flattened(
+                    batch["target"], "variable"
+                )
+            )
+            direct_prediction = to_numpy(
+                normalizer.denormalize_flattened(
+                    direct_normalized, "variable"
+                )
+            )
+            pod_prediction = to_numpy(
+                normalizer.denormalize_flattened(
+                    pod_normalized, "variable"
+                )
+            )
             metric_state["DeepONet"].update(
                 reference, direct_prediction
             )
@@ -2017,7 +2300,7 @@ def run_deepxde_benchmark(
             for index, coordinate in enumerate(batch["coordinates"]):
                 if len(plot_reference) >= plot_limit:
                     break
-                plot_coordinates.append(coordinate.numpy())
+                plot_coordinates.append(to_numpy(coordinate))
                 plot_reference.append(reference[index])
                 plot_direct.append(direct_prediction[index])
                 plot_pod.append(pod_prediction[index])
@@ -2076,6 +2359,7 @@ def run_deepxde_benchmark(
 
 __all__ = [
     "AutoencoderAdapter",
+    "CheckpointCallback",
     "CoordinateScaler",
     "DeepONetBenchmarkConfig",
     "DeepONetBenchmarkResult",

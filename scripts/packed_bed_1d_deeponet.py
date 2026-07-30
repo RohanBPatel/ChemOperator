@@ -1,4 +1,4 @@
-"""Train direct and IPCA-POD DeepONets for 1D packed-bed profiles."""
+"""Legacy packed-bed DeepONet example plus the unified benchmark entry point."""
 
 from __future__ import annotations
 
@@ -59,6 +59,21 @@ RESAMPLE_POINTS = 128
 SEED = 7
 PLOT_CASES = 2
 MAX_TRAJECTORIES: int | None = None
+
+
+def run_unified_benchmark(model: str = "deeponet", **overrides):
+    """Run the packed-bed problem with any registered operator model."""
+
+    from chem_operator._benchmark import BenchmarkConfig, run_benchmark
+
+    return run_benchmark(
+        BenchmarkConfig(
+            problem="packed_bed",
+            model=model,
+            output_root=ROOT / "artifacts" / "benchmarks",
+            **overrides,
+        )
+    )
 
 
 def raw_dataset(data_dir: Path, split: str, stride: int) -> ChemOperatorDataset:

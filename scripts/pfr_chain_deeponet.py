@@ -1,4 +1,4 @@
-"""Tune and train direct and IPCA-POD DeepONets for PFR-chain trajectories.
+"""Tune direct/POD PFR models or call the unified benchmark facade.
 
 Edit the module-level settings below to change the experiment. The example has
 no command-line interface: running this file tunes both models independently,
@@ -84,6 +84,21 @@ DATALOADER_WORKERS = 0
 PIN_MEMORY = bool(GPUS_PER_TRIAL)
 RAY_OBJECT_STORE_BYTES = 100 * 1024**2
 FINAL_DISPLAY_EVERY = 10
+
+
+def run_unified_benchmark(model: str = "deeponet", **overrides):
+    """Run the PFR-chain problem with any registered operator model."""
+
+    from chem_operator._benchmark import BenchmarkConfig, run_benchmark
+
+    return run_benchmark(
+        BenchmarkConfig(
+            problem="pfr",
+            model=model,
+            output_root=ROOT / "artifacts" / "benchmarks",
+            **overrides,
+        )
+    )
 
 
 def search_space(

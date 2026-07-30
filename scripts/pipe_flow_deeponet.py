@@ -1,4 +1,4 @@
-"""Compare data-driven and physics-informed DeepONets for pipe flow."""
+"""Compare pipe-flow DeepONets and expose the unified operator benchmark."""
 
 from __future__ import annotations
 
@@ -37,6 +37,21 @@ ROOT = Path(__file__).resolve().parents[1]
 BRANCH_NAMES = ("radius", "length", "dynamic_viscosity", "pressure_drop")
 ALL_CONSTANTS = BRANCH_NAMES + ("density", "pressure_gradient")
 METRIC = "valid_relative_l2"
+
+
+def run_unified_benchmark(model: str = "deeponet", **overrides):
+    """Run steady pipe flow in the common operator-only comparison matrix."""
+
+    from chem_operator._benchmark import BenchmarkConfig, run_benchmark
+
+    return run_benchmark(
+        BenchmarkConfig(
+            problem="pipe_flow",
+            model=model,
+            output_root=ROOT / "artifacts" / "benchmarks",
+            **overrides,
+        )
+    )
 
 
 @dataclass(frozen=True)

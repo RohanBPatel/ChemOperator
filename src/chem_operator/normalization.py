@@ -9,16 +9,24 @@ input tensor's device and dtype at call time.
 from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
-from typing import Any, Literal, Protocol
+from typing import Any, Literal, Protocol, cast
 
 import torch
 
 
 FieldMode = Literal["variable", "constant"]
+NormalizerState = dict[str, Any]
+
+_NORMALIZER_STATE_SCHEMA = "chem-operator-normalizer"
+_NORMALIZER_STATE_VERSION = 1
 
 
 class Normalizer(Protocol):
     """Interface required by :class:`DataProcessor`."""
+
+    def state_dict(self) -> NormalizerState:
+        """Return a versioned, JSON- and ``torch.save``-safe state."""
+        ...
 
     def normalize(self, x: torch.Tensor, field: str) -> torch.Tensor: ...
 
@@ -47,6 +55,9 @@ class Normalizer(Protocol):
 
 class IdentityNormalizer:
     """A no-op normalizer with the complete normalizer interface."""
+
+    def state_dict(self) -> NormalizerState:
+        return _normalizer_state("identity")
 
     def normalize(self, x: torch.Tensor, field: str) -> torch.Tensor:
         return x
@@ -102,6 +113,115 @@ def _ordered_flattened(
     return torch.cat([statistics[field].reshape(-1) for field in fields])
 
 
+def _normalizer_state(normalizer_type: str, **values: Any) -> NormalizerState:
+    return {
+        "schema": _NORMALIZER_STATE_SCHEMA,
+        "version": _NORMALIZER_STATE_VERSION,
+        "type": normalizer_type,
+        **values,
+    }
+
+
+def _tensor_state(value: torch.Tensor) -> dict[str, Any]:
+    """Encode one tensor without relying on pickle-specific tensor objects."""
+    tensor = value.detach().cpu().contiguous()
+    return {
+        "dtype": str(tensor.dtype).removeprefix("torch."),
+        "shape": list(tensor.shape),
+        "data": tensor.tolist(),
+    }
+
+
+def _tensor_from_state(value: Any, *, name: str) -> torch.Tensor:
+    if not isinstance(value, Mapping):
+        raise TypeError(f"Serialized statistic {name!r} must be a mapping.")
+
+    dtype_name = value.get("dtype")
+    shape = value.get("shape")
+    if not isinstance(dtype_name, str):
+        raise TypeError(f"Serialized statistic {name!r} has no string dtype.")
+    if (
+        not isinstance(shape, Sequence)
+        or isinstance(shape, (str, bytes))
+        or not all(isinstance(size, int) and size >= 0 for size in shape)
+    ):
+        raise TypeError(f"Serialized statistic {name!r} has an invalid shape.")
+
+    dtype = getattr(torch, dtype_name, None)
+    if not isinstance(dtype, torch.dtype):
+        raise ValueError(
+            f"Serialized statistic {name!r} uses unsupported dtype {dtype_name!r}."
+        )
+    if "data" not in value:
+        raise KeyError(f"Serialized statistic {name!r} has no data.")
+
+    try:
+        tensor = torch.as_tensor(value["data"], dtype=dtype)
+        tensor = tensor.reshape(tuple(shape))
+    except (TypeError, ValueError, RuntimeError) as exc:
+        raise ValueError(
+            f"Serialized statistic {name!r} does not match shape {list(shape)!r}."
+        ) from exc
+    return tensor
+
+
+def _statistics_state(
+    statistics: Mapping[str, Mapping[str, torch.Tensor]],
+) -> dict[str, dict[str, dict[str, Any]]]:
+    return {
+        statistic: {
+            field: _tensor_state(value)
+            for field, value in sorted(fields.items())
+        }
+        for statistic, fields in sorted(statistics.items())
+    }
+
+
+def _statistics_from_state(
+    value: Any,
+) -> dict[str, dict[str, torch.Tensor]]:
+    if not isinstance(value, Mapping):
+        raise TypeError("Serialized normalizer statistics must be a mapping.")
+
+    decoded: dict[str, dict[str, torch.Tensor]] = {}
+    for statistic, raw_fields in value.items():
+        if not isinstance(statistic, str) or not isinstance(raw_fields, Mapping):
+            raise TypeError(
+                "Serialized normalizer statistics must map names to field mappings."
+            )
+        decoded[statistic] = {}
+        for field, raw_value in raw_fields.items():
+            if not isinstance(field, str):
+                raise TypeError("Serialized statistic field names must be strings.")
+            decoded[statistic][field] = _tensor_from_state(
+                raw_value,
+                name=f"{statistic}/{field}",
+            )
+    return decoded
+
+
+def _field_order(value: Any, *, name: str) -> tuple[str, ...]:
+    if (
+        not isinstance(value, Sequence)
+        or isinstance(value, (str, bytes))
+        or not all(isinstance(field, str) for field in value)
+    ):
+        raise TypeError(f"{name} must be a sequence of strings.")
+    return tuple(value)
+
+
+def _state_common(
+    normalizer: Any,
+    statistics: Mapping[str, Mapping[str, torch.Tensor]],
+) -> dict[str, Any]:
+    return {
+        "variable_field_order": list(normalizer.variable_field_order),
+        "constant_field_order": list(normalizer.constant_field_order),
+        "min_denom": float(normalizer.min_denom),
+        "statistics": _statistics_state(statistics),
+    }
+
+
 class ZScoreNormalizer:
     """Normalize fields with means and standard deviations.
 
@@ -126,23 +246,38 @@ class ZScoreNormalizer:
     ):
         self.variable_field_order = tuple(variable_field_order)
         self.constant_field_order = tuple(constant_field_order)
+        self.min_denom = float(min_denom)
         all_fields = self.variable_field_order + self.constant_field_order
 
         self.means = self._read(stats, "mean", all_fields)
         self.stds = {
-            name: value.abs().clamp_min(min_denom)
+            name: value.abs().clamp_min(self.min_denom)
             for name, value in self._read(stats, "std", all_fields).items()
         }
         self.delta_means = self._read(
             stats, "mean_delta", self.variable_field_order
         )
         self.delta_stds = {
-            name: value.abs().clamp_min(min_denom)
+            name: value.abs().clamp_min(self.min_denom)
             for name, value in self._read(
                 stats, "std_delta", self.variable_field_order
             ).items()
         }
         self._make_flattened_statistics()
+
+    def state_dict(self) -> NormalizerState:
+        return _normalizer_state(
+            "zscore",
+            **_state_common(
+                self,
+                {
+                    "mean": self.means,
+                    "std": self.stds,
+                    "mean_delta": self.delta_means,
+                    "std_delta": self.delta_stds,
+                },
+            ),
+        )
 
     @staticmethod
     def _read(
@@ -276,15 +411,16 @@ class RMSNormalizer:
     ):
         self.variable_field_order = tuple(variable_field_order)
         self.constant_field_order = tuple(constant_field_order)
+        self.min_denom = float(min_denom)
         all_fields = self.variable_field_order + self.constant_field_order
         self.rmss = {
-            name: value.abs().clamp_min(min_denom)
+            name: value.abs().clamp_min(self.min_denom)
             for name, value in ZScoreNormalizer._read(
                 stats, "rms", all_fields
             ).items()
         }
         self.delta_rmss = {
-            name: value.abs().clamp_min(min_denom)
+            name: value.abs().clamp_min(self.min_denom)
             for name, value in ZScoreNormalizer._read(
                 stats, "rms_delta", self.variable_field_order
             ).items()
@@ -302,6 +438,18 @@ class RMSNormalizer:
                 self.delta_rmss, self.variable_field_order
             )
         }
+
+    def state_dict(self) -> NormalizerState:
+        return _normalizer_state(
+            "rms",
+            **_state_common(
+                self,
+                {
+                    "rms": self.rmss,
+                    "rms_delta": self.delta_rmss,
+                },
+            ),
+        )
 
     @staticmethod
     def _scale_field(
@@ -387,7 +535,7 @@ class MinMaxNormalizer:
         self.variable_field_order = tuple(variable_field_order)
         self.constant_field_order = tuple(constant_field_order)
         self.feature_range = (float(low), float(high))
-        self.min_denom = min_denom
+        self.min_denom = float(min_denom)
         all_fields = self.variable_field_order + self.constant_field_order
         self.minimums = ZScoreNormalizer._read(stats, "min", all_fields)
         self.maximums = ZScoreNormalizer._read(stats, "max", all_fields)
@@ -423,6 +571,19 @@ class MinMaxNormalizer:
                 self.delta_maximums, self.variable_field_order
             )
         }
+
+    def state_dict(self) -> NormalizerState:
+        state = _state_common(
+            self,
+            {
+                "min": self.minimums,
+                "max": self.maximums,
+                "min_delta": self.delta_minimums,
+                "max_delta": self.delta_maximums,
+            },
+        )
+        state["feature_range"] = list(self.feature_range)
+        return _normalizer_state("minmax", **state)
 
     def _transform(
         self,
@@ -547,6 +708,92 @@ class MinMaxNormalizer:
         )
 
 
+def normalizer_from_state_dict(state: Mapping[str, Any]) -> Normalizer:
+    """Restore a normalizer from :meth:`Normalizer.state_dict` output.
+
+    The serialized representation intentionally contains only mappings, lists,
+    strings, integers, floats, booleans, and ``None``. It can therefore be
+    round-tripped through JSON as well as through ``torch.save``.
+    """
+    if not isinstance(state, Mapping):
+        raise TypeError("Normalizer state must be a mapping.")
+    if state.get("schema") != _NORMALIZER_STATE_SCHEMA:
+        raise ValueError(
+            "Unsupported normalizer state schema "
+            f"{state.get('schema')!r}; expected {_NORMALIZER_STATE_SCHEMA!r}."
+        )
+    if state.get("version") != _NORMALIZER_STATE_VERSION:
+        raise ValueError(
+            "Unsupported normalizer state version "
+            f"{state.get('version')!r}; expected {_NORMALIZER_STATE_VERSION}."
+        )
+
+    normalizer_type = state.get("type")
+    if normalizer_type == "identity":
+        return cast(Normalizer, IdentityNormalizer())
+    if normalizer_type not in {"zscore", "rms", "minmax"}:
+        raise ValueError(f"Unsupported normalizer type {normalizer_type!r}.")
+
+    variable_fields = _field_order(
+        state.get("variable_field_order"),
+        name="variable_field_order",
+    )
+    constant_fields = _field_order(
+        state.get("constant_field_order"),
+        name="constant_field_order",
+    )
+    try:
+        min_denom = float(state["min_denom"])
+    except (KeyError, TypeError, ValueError) as exc:
+        raise TypeError("Serialized normalizer min_denom must be numeric.") from exc
+    statistics = _statistics_from_state(state.get("statistics"))
+
+    if normalizer_type == "zscore":
+        return cast(
+            Normalizer,
+            ZScoreNormalizer(
+                statistics,
+                variable_fields,
+                constant_fields,
+                min_denom=min_denom,
+            ),
+        )
+    if normalizer_type == "rms":
+        return cast(
+            Normalizer,
+            RMSNormalizer(
+                statistics,
+                variable_fields,
+                constant_fields,
+                min_denom=min_denom,
+            ),
+        )
+
+    raw_range = state.get("feature_range")
+    if (
+        not isinstance(raw_range, Sequence)
+        or isinstance(raw_range, (str, bytes))
+        or len(raw_range) != 2
+    ):
+        raise TypeError("Serialized MinMax feature_range must contain two values.")
+    try:
+        feature_range = (float(raw_range[0]), float(raw_range[1]))
+    except (TypeError, ValueError) as exc:
+        raise TypeError(
+            "Serialized MinMax feature_range values must be numeric."
+        ) from exc
+    return cast(
+        Normalizer,
+        MinMaxNormalizer(
+            statistics,
+            variable_fields,
+            constant_fields,
+            feature_range=feature_range,
+            min_denom=min_denom,
+        ),
+    )
+
+
 # Compatibility with The Well's class names.
 ZScoreNormalization = ZScoreNormalizer
 RMSNormalization = RMSNormalizer
@@ -559,8 +806,10 @@ __all__ = [
     "MinMaxNormalization",
     "MinMaxNormalizer",
     "Normalizer",
+    "NormalizerState",
     "RMSNormalization",
     "RMSNormalizer",
     "ZScoreNormalization",
     "ZScoreNormalizer",
+    "normalizer_from_state_dict",
 ]

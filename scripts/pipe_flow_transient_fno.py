@@ -1,4 +1,4 @@
-"""Tune and train a 2D FNO for transient Hagen--Poiseuille flow."""
+"""Tune the specialized transient FNO or use the unified benchmark facade."""
 
 # Environment variables must be set before importing plotting and Ray.
 # pylint: disable=wrong-import-position
@@ -77,6 +77,21 @@ PLOT_CASES = 2
 CPUS_PER_TRIAL = 2
 GPUS_PER_TRIAL = 1 if torch.cuda.is_available() else 0
 MAX_CONCURRENT_TRIALS = 1
+
+
+def run_unified_benchmark(model: str = "fno", **overrides):
+    """Run transient pipe flow with any registered operator model."""
+
+    from chem_operator._benchmark import BenchmarkConfig, run_benchmark
+
+    return run_benchmark(
+        BenchmarkConfig(
+            problem="pipe_flow_transient",
+            model=model,
+            output_root=ROOT / "artifacts" / "benchmarks",
+            **overrides,
+        )
+    )
 
 
 def raw_dataset(data_dir: Path, split: str) -> ChemOperatorDataset:

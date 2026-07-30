@@ -15,5 +15,6 @@ wheels/
 
 # ray
 ray_results/
+artifacts/benchmarks/
 core
 core.*

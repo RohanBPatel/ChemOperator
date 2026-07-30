@@ -1,4 +1,4 @@
-"""Train direct and IPCA-POD DeepONets for complete CSTR trajectories."""
+"""Legacy CSTR DeepONet example plus the unified benchmark entry point."""
 
 from __future__ import annotations
 
@@ -42,6 +42,21 @@ COORDINATE_STRIDE = 5
 SEED = 7
 PLOT_CASES = 2
 MAX_TRAJECTORIES: int | None = None
+
+
+def run_unified_benchmark(model: str = "deeponet", **overrides):
+    """Run this problem through the shared model/problem benchmark matrix."""
+
+    from chem_operator._benchmark import BenchmarkConfig, run_benchmark
+
+    return run_benchmark(
+        BenchmarkConfig(
+            problem="cstr",
+            model=model,
+            output_root=ROOT / "artifacts" / "benchmarks",
+            **overrides,
+        )
+    )
 
 
 def raw_dataset(data_dir: Path, split: str, stride: int) -> ChemOperatorDataset:

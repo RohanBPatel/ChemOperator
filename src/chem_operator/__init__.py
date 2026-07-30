@@ -1,6 +1,12 @@
 import warnings
-import cantera as ct
+import os
 from pathlib import Path
+
+# Cantera imports optional drawing helpers that initialize Matplotlib. Keep
+# headless/library imports away from an unwritable user configuration folder.
+os.environ.setdefault("MPLCONFIGDIR", "/tmp/matplotlib")
+
+import cantera as ct
 
 # expected warning when reading mechanisms
 warnings.filterwarnings(
@@ -17,4 +23,4 @@ warnings.filterwarnings(
 )
 
 # add example_data
-ct.add_data_directory(Path(__file__).resolve().parent / "external" / "example_data")
+ct.add_data_directory(Path(__file__).resolve().parent / "example_data")

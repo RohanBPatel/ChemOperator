@@ -1,4 +1,4 @@
-"""Tune, train, and benchmark a Fourier neural operator for Q2D CMR data.
+"""Tune the specialized Q2D FNO or use the unified operator benchmark.
 
 The current operator maps the two independently varied case parameters
 ``T0`` and ``SCCM`` to axial velocity and the CH4/H2 mole-fraction fields.
@@ -97,6 +97,21 @@ EVALUATION_BATCH_SIZE = 2
 CPUS_PER_TRIAL = 2
 GPUS_PER_TRIAL = 1 if torch.cuda.is_available() else 0
 MAX_CONCURRENT_TRIALS = 1
+
+
+def run_unified_benchmark(model: str = "fno", **overrides):
+    """Run Q2D CMR with any registered operator model."""
+
+    from chem_operator._benchmark import BenchmarkConfig, run_benchmark
+
+    return run_benchmark(
+        BenchmarkConfig(
+            problem="q2d",
+            model=model,
+            output_root=ROOT / "artifacts" / "benchmarks",
+            **overrides,
+        )
+    )
 
 LATENCY_WARMUPS = 5
 LATENCY_REPEATS = 20
@@ -1705,7 +1720,7 @@ def plot_mesh_wall_time(
     figure, (axis, offline_axis) = plt.subplots(
         1,
         2,
-        figsize=(19, 7.5),
+        figsize=(16, 11),
         gridspec_kw={"width_ratios": (3.2, 2.3)},
         sharey=True,
         constrained_layout=True,
@@ -1737,12 +1752,12 @@ def plot_mesh_wall_time(
     components = (
         (
             float(cost_model["data_generation_seconds"]),
-            r"Data Generation",
+            r"Data generation",
             "tab:blue",
         ),
         (
             ray_tuning_seconds,
-            r"Tuning Model",
+            r"Tuning model",
             "tab:purple",
         ),
         (
