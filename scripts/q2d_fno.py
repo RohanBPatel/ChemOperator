@@ -1705,7 +1705,7 @@ def plot_mesh_wall_time(
     figure, (axis, offline_axis) = plt.subplots(
         1,
         2,
-        figsize=(19, 7.5),
+        figsize=(16, 12),
         gridspec_kw={"width_ratios": (3.2, 2.3)},
         sharey=True,
         constrained_layout=True,
@@ -1794,6 +1794,7 @@ def plot_mesh_wall_time(
     offline_axis.set_xticks(
         bar_positions,
         [component[1] for component in components],
+        fontsize=14
     )
     offline_axis.set_title("One-time offline cost components")
     offline_axis.grid(axis="y", alpha=0.28)
